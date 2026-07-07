@@ -67,6 +67,7 @@
   },
   "devDependencies": {
     "@types/node": "catalog:typescript",
+    "vite": "catalog:build",
     "vite-plus": "catalog:build"
   }
 }

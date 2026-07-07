@@ -144,6 +144,7 @@
     "@types/react": "catalog:react",
     "@types/react-dom": "catalog:react",
     "@typescript/native-preview": "catalog:typescript",
+    "vite": "catalog:build",
     "vite-plus": "catalog:build"
   }
 }

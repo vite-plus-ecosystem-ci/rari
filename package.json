@@ -30,6 +30,8 @@
     "eslint-plugin-oxlint": "catalog:eslint",
     "eslint-plugin-react-refresh": "catalog:eslint",
     "knip": "catalog:eslint",
-    "vite-plus": "catalog:build"
+    "vite": "catalog:build",
+    "vite-plus": "catalog:build",
+    "vitest": "catalog:build"
   }
 }

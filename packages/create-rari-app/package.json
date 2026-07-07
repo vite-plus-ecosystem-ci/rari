@@ -53,6 +53,7 @@
   "devDependencies": {
     "@types/node": "catalog:typescript",
     "@typescript/native-preview": "catalog:typescript",
+    "vite": "catalog:build",
     "vite-plus": "catalog:build"
   }
 }
