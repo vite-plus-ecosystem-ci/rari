@@ -1,9 +1,8 @@
 pub mod cache;
 
-use cache::redis_cache;
-use deno_core::{Extension, extension};
+use deno_core::{Extension, ExtensionArguments, extension};
 
-use super::ExtensionTrait;
+use super::{ExtensionTrait, lazy};
 
 extension!(
     rari,
@@ -15,6 +14,7 @@ extension!(
         "http/api_handler.ts",
         "rsc/client_registry.ts",
         "react/component_loader.ts",
+        "react/vendor_loaders.ts",
         "http/cookies.ts",
         "react/metadata_collector.ts",
         "rsc/rsc_modules.ts",
@@ -26,6 +26,7 @@ extension!(
         "react/vendor/react-server.js",
         "react/vendor/react-jsx-runtime.js",
         "react/vendor/react-dom-server.js",
+        "react/vendor/react-dom.js",
         "react/vendor/react-server-dom-webpack-client.js",
         "react/vendor/react-server-dom-webpack-server.js",
         "react/vendor/index.js",
@@ -38,10 +39,9 @@ impl ExtensionTrait<()> for rari {
     }
 }
 
-pub fn extensions(is_snapshot: bool) -> Vec<Extension> {
-    vec![rari::build((), is_snapshot)]
-}
-
-pub fn redis_cache_extensions(is_snapshot: bool) -> Vec<Extension> {
-    redis_cache::extensions(None, is_snapshot)
+pub fn extensions(is_snapshot: bool) -> (Vec<Extension>, Vec<ExtensionArguments>) {
+    let mut extensions = Vec::new();
+    let mut lazy_args = Vec::new();
+    lazy::register::<(), rari>((), is_snapshot, &mut extensions, &mut lazy_args);
+    (extensions, lazy_args)
 }

@@ -1,4 +1,6 @@
 import type { Plugin } from 'vite-plus'
+import type { ModuleAnalysis } from './directives'
+import type { MdxPluginOptions } from './mdx-registry'
 import type { ServerCacheConfig, ServerCacheControlConfig, ServerCacheLayerConfig, ServerConfig, ServerCSPConfig } from './server-config'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -13,43 +15,26 @@ import {
   FILE_PROTOCOL_REGEX,
   TSX_EXT_REGEX,
 } from '../shared/regex-constants'
-import { resolveAlias } from './alias-resolver'
+import { resolveAlias } from '../shared/utils/alias-resolver'
+import { resolveIndexFile, resolveWithExtensions, resolveWithExtensionsAndIndex } from '../shared/utils/file-resolver'
 import { getReadableComponentId, getComponentId as getSharedComponentId, getProjectRelativePath as getSharedProjectRelativePath, hashString as sharedHashString } from './component-ids'
-import { getDirectives, hasDefaultExport, hasTopLevelUseClientDirective, hasTopLevelUseServerDirective } from './directives'
-import { resolveIndexFile, resolveWithExtensions } from './file-resolver'
+import { analyzeModuleSource } from './directives'
+import { parseHtmlEntryImports } from './html-entry-imports'
+import {
+  resolveMdxRegistryEntries,
+} from './mdx-registry'
+import { filterExternalDependencies, filterRelativeImportSources, hasNodeImportsFromAnalysis, isNodeBuiltinModule, ModuleAnalysisCache, resolveModuleCachePath } from './module-analysis-cache'
+import { collectSourceFilePaths, normalizeScanDirs } from './source-file-walker'
 import { getUseCacheTransform } from './use-cache-loader'
 
-const HTML_IMPORT_REGEX = /import\s*\(\s*["']([^"']+)["']\s*\)|import\s+["']([^"']+)["']/g
-const CODE_IMPORT_REGEX = /from\s+['"]([^'"]+)['"]|import\s*\(\s*['"]([^'"]+)['"]\s*\)|import\s+['"]([^'"]+)['"]/g
-const EXTRACT_DEPENDENCIES_REGEX = /import(?:\s+(?:\w+|\{[^}]*\}|\*\s+as\s+\w+)(?:\s*,\s*(?:\w+|\{[^}]*\}|\*\s+as\s+\w+))*\s+from\s+)?['"]([^'"]+)['"]/g
 const COMPONENT_IMPORT_REGEX = /import\s+(\w+)\s+from\s+['"]([^'"]+)['"]/g
 const CLIENT_IMPORT_REGEX = /import\s+(?:(\w+)|\{([^}]+)\})\s+from\s+['"]([^'"]+)['"];?\s*$/gm
 const PROXY_FILE_REGEX = /^proxy\.(?:tsx?|jsx?|mts|mjs)$/
 const COMPONENTS_PATH_REGEX = /\/components\/(\w+)(?:\.tsx?|\.jsx?)?$/
 const COMPONENTS_PATH_ALT_REGEX = /[/\\]components[/\\](\w+)(?:\.tsx?|\.jsx?)?$/
 const SPECIAL_FILE_REGEX = /^(?:robots|sitemap|feed)\.(?:tsx?|jsx?)$/
+const RSC_REFERENCES_IMPORT = 'react-server-dom-rari/server'
 const NODE_PROTOCOL_REGEX = /^node:/
-const NODE_BUILTINS = new Set([
-  'fs',
-  'path',
-  'os',
-  'crypto',
-  'util',
-  'stream',
-  'events',
-  'process',
-  'buffer',
-  'url',
-  'querystring',
-  'zlib',
-  'http',
-  'https',
-  'net',
-  'tls',
-  'child_process',
-  'cluster',
-  'worker_threads',
-])
 export const RARI_CSS_MODULES_PATTERN = '[hash]_[local]'
 
 const RARI_DIST_DIR = path.dirname(fileURLToPath(import.meta.url))
@@ -88,6 +73,11 @@ interface ServerComponentManifest {
       css?: string[]
     }
   >
+  mdxRegistry?: Array<{
+    name: string
+    id: string
+    client: boolean
+  }>
   buildTime: string
 }
 
@@ -117,10 +107,12 @@ export interface ServerBuildOptions {
   csp?: ServerCSPConfig
   cacheControl?: ServerCacheControlConfig
   cache?: ServerCacheConfig
+  moduleAnalysisCache?: ModuleAnalysisCache
   experimental?: {
     useCache?: boolean
     useCacheRemote?: ServerCacheLayerConfig
   }
+  mdx?: MdxPluginOptions
 }
 
 export interface ComponentRebuildResult {
@@ -130,13 +122,30 @@ export interface ComponentRebuildResult {
   error?: string
 }
 
-type ResolvedServerBuildOptions = Required<Omit<ServerBuildOptions, 'csp' | 'cacheControl' | 'cache' | 'define' | 'serverConfigPath' | 'experimental'>> & {
+type ResolvedServerBuildOptions = Required<Omit<ServerBuildOptions, 'csp' | 'cacheControl' | 'cache' | 'define' | 'serverConfigPath' | 'experimental' | 'moduleAnalysisCache' | 'mdx'>> & {
   serverConfigPath: string
   csp?: ServerBuildOptions['csp']
   cacheControl?: ServerBuildOptions['cacheControl']
   cache?: ServerBuildOptions['cache']
   define?: ServerBuildOptions['define']
   experimental?: ServerBuildOptions['experimental']
+  moduleAnalysisCache?: ModuleAnalysisCache
+  mdx?: ServerBuildOptions['mdx']
+}
+
+export function isServerComponentFromAnalysis(
+  filePath: string,
+  analysis: ModuleAnalysis,
+  htmlOnlyImports: ReadonlySet<string>,
+  cacheKey?: string,
+): boolean {
+  if (filePath.includes('node_modules'))
+    return false
+
+  if (htmlOnlyImports.has(cacheKey ?? resolveModuleCachePath(filePath)))
+    return false
+
+  return !analysis.directives.hasUseClient && !analysis.directives.hasUseServer
 }
 
 export class ServerComponentBuilder {
@@ -167,13 +176,38 @@ export class ServerComponentBuilder {
     code: string
     css: string[]
     timestamp: number
-    dependencies: string[]
+    sourceDependencies: string[]
+    bundledDependencies: string[]
   }>()
 
   private htmlOnlyImports = new Set<string>()
   private fileImporters = new Map<string, Set<string>>()
-  private directiveResultCache = new Map<string, { hasUseClient: boolean, hasUseServer: boolean, error: boolean }>()
+  private moduleAnalysisCache: ModuleAnalysisCache
   private discoveredExternalClientComponents = new Set<string>()
+  private clientComponentFiles = new Map<string, string>()
+
+  recordClientComponent(filePath: string, code: string): void {
+    this.clientComponentFiles.set(filePath, code)
+  }
+
+  getClientComponentFiles(): Array<{ filePath: string, code: string }> {
+    return [...this.clientComponentFiles.entries()].map(([filePath, code]) => ({
+      filePath,
+      code,
+    }))
+  }
+
+  getClientComponentPaths(): string[] {
+    return [...this.clientComponentFiles.keys()]
+  }
+
+  getModuleAnalysisCache(): ModuleAnalysisCache {
+    return this.moduleAnalysisCache
+  }
+
+  clearClientComponentFiles(): void {
+    this.clientComponentFiles.clear()
+  }
 
   getComponentCount(): number {
     return this.serverComponents.size + this.serverActions.size
@@ -186,7 +220,7 @@ export class ServerComponentBuilder {
   removeComponent(filePath: string): void {
     this.serverComponents.delete(filePath)
     this.serverActions.delete(filePath)
-    this.directiveResultCache.delete(filePath)
+    this.moduleAnalysisCache.invalidate(filePath)
   }
 
   getImportGraph(): ReadonlyMap<string, ReadonlySet<string>> {
@@ -202,10 +236,6 @@ export class ServerComponentBuilder {
     return new Set(this.htmlOnlyImports)
   }
 
-  private hashString(value: string, length = 8): string {
-    return sharedHashString(value, length)
-  }
-
   private async writeComponentCssAsset(componentId: string, cssModules: string[]): Promise<string[]> {
     if (cssModules.length === 0)
       return []
@@ -214,7 +244,7 @@ export class ServerComponentBuilder {
     await fs.promises.mkdir(assetsDir, { recursive: true })
 
     const cssContent = `${cssModules.join('\n')}\n`
-    const cssFileName = `${this.hashString(componentId + cssContent, 12)}.css`
+    const cssFileName = `${sharedHashString(componentId + cssContent, 12)}.css`
     const cssPath = path.join(assetsDir, cssFileName)
     await fs.promises.writeFile(cssPath, cssContent, 'utf-8')
 
@@ -225,7 +255,7 @@ export class ServerComponentBuilder {
     return this.getComponentId(path.join(this.projectRoot, 'src', 'app', filePath))
   }
 
-  private getLegacyComponentReferenceId(filePath: string): string {
+  private getComponentReferenceId(filePath: string): string {
     return this.getReadableComponentId(this.getProjectRelativePath(filePath))
   }
 
@@ -278,6 +308,7 @@ export class ServerComponentBuilder {
 
   constructor(projectRoot: string, options: ServerBuildOptions = {}) {
     this.projectRoot = projectRoot
+    this.moduleAnalysisCache = options.moduleAnalysisCache ?? new ModuleAnalysisCache()
     const rscDir = options.rscDir || 'server'
     this.options = {
       outDir: options.outDir || path.join(projectRoot, 'dist'),
@@ -290,144 +321,83 @@ export class ServerComponentBuilder {
       csp: options.csp,
       cacheControl: options.cacheControl,
       experimental: options.experimental,
+      mdx: options.mdx,
     }
 
     this.parseHtmlImports()
   }
 
   private parseHtmlImports() {
-    const indexHtmlPath = path.join(this.projectRoot, 'index.html')
-    if (!fs.existsSync(indexHtmlPath))
-      return
-
-    try {
-      const htmlContent = fs.readFileSync(indexHtmlPath, 'utf-8')
-      for (const match of htmlContent.matchAll(HTML_IMPORT_REGEX)) {
-        const importPath = match[1] || match[2]
-        if (importPath.startsWith('/src/')) {
-          const absolutePath = path.join(this.projectRoot, importPath.slice(1))
-          this.htmlOnlyImports.add(absolutePath)
-        }
-      }
-    }
-    catch (error) {
-      console.warn('[server-build] Error parsing index.html:', error)
-    }
+    for (const importPath of parseHtmlEntryImports(this.projectRoot))
+      this.htmlOnlyImports.add(importPath)
   }
 
-  private isHtmlOnlyImport(filePath: string): boolean {
-    return this.htmlOnlyImports.has(filePath)
-  }
-
-  private getDirectivesCached(filePath: string, source?: string): { hasUseClient: boolean, hasUseServer: boolean, error: boolean } {
-    if (!source) {
-      const cached = this.directiveResultCache.get(filePath)
-      if (cached)
-        return cached
-    }
-
-    try {
-      const code = source ?? fs.readFileSync(filePath, 'utf-8')
-      const directives = getDirectives(code)
-      const result = { hasUseClient: directives.hasUseClient, hasUseServer: directives.hasUseServer, error: false }
-      this.directiveResultCache.set(filePath, result)
-      return result
-    }
-    catch {
-      return { hasUseClient: false, hasUseServer: false, error: true }
-    }
+  getModuleAnalysis(filePath: string, source?: string): ModuleAnalysis {
+    return this.moduleAnalysisCache.get(filePath, source)
   }
 
   isServerComponent(filePath: string, source?: string): boolean {
-    if (filePath.includes('node_modules'))
+    try {
+      const analysis = this.moduleAnalysisCache.get(filePath, source)
+      return isServerComponentFromAnalysis(filePath, analysis, this.htmlOnlyImports)
+    }
+    catch {
       return false
-
-    if (this.isHtmlOnlyImport(filePath))
-      return false
-
-    const directives = this.getDirectivesCached(filePath, source)
-    if (directives.error)
-      return false
-
-    return !directives.hasUseClient && !directives.hasUseServer
+    }
   }
 
   private isClientComponent(filePath: string, source?: string): boolean {
-    return this.getDirectivesCached(filePath, source).hasUseClient
+    try {
+      return this.moduleAnalysisCache.get(filePath, source).directives.hasUseClient
+    }
+    catch {
+      return false
+    }
   }
 
-  buildImportGraph(srcDir: string) {
-    this.fileImporters.clear()
+  resolveImportedFilePath(importerPath: string, importPath: string): string | null {
+    let resolvedPath: string | null = null
 
-    const scanForImports = (dir: string) => {
-      if (!fs.existsSync(dir))
-        return
-
-      const entries = fs.readdirSync(dir, { withFileTypes: true })
-
-      for (const entry of entries) {
-        const fullPath = path.join(dir, entry.name)
-
-        if (entry.isDirectory()) {
-          if (entry.name === 'node_modules')
-            continue
-          scanForImports(fullPath)
-        }
-        else if (entry.isFile() && TSX_EXT_REGEX.test(entry.name)) {
-          try {
-            const code = fs.readFileSync(fullPath, 'utf-8')
-            let match
-
-            CODE_IMPORT_REGEX.lastIndex = 0
-            match = CODE_IMPORT_REGEX.exec(code)
-            while (match !== null) {
-              const importPath = match[1] || match[2] || match[3]
-              let resolvedPath: string | null = null
-
-              if (importPath.startsWith('./') || importPath.startsWith('../')) {
-                const importerDir = path.dirname(fullPath)
-                resolvedPath = path.resolve(importerDir, importPath)
-              }
-              else if (importPath.startsWith('@/')) {
-                const relativePath = importPath.slice(2)
-                resolvedPath = path.join(this.projectRoot, 'src', relativePath)
-              }
-
-              if (resolvedPath) {
-                const extensions = ['', '.ts', '.tsx', '.js', '.jsx']
-                let foundPath: string | null = null
-
-                for (const ext of extensions) {
-                  const pathWithExt = resolvedPath + ext
-                  try {
-                    if (fs.statSync(pathWithExt).isFile()) {
-                      foundPath = pathWithExt
-                      break
-                    }
-                  }
-                  catch {}
-                }
-
-                if (foundPath) {
-                  if (!this.fileImporters.has(foundPath))
-                    this.fileImporters.set(foundPath, new Set())
-
-                  this.fileImporters.get(foundPath)!.add(fullPath)
-                }
-              }
-
-              match = CODE_IMPORT_REGEX.exec(code)
-            }
-          }
-          catch (err) {
-            if ((err as any)?.code !== 'ENOENT')
-              console.warn('[rari] Unexpected error building import graph:', fullPath, err)
-          }
-        }
+    if (importPath.startsWith('./') || importPath.startsWith('../')) {
+      const importerDir = path.dirname(importerPath)
+      resolvedPath = path.resolve(importerDir, importPath)
+    }
+    else {
+      resolvedPath = resolveAlias(importPath, this.options.alias, this.projectRoot)
+      if (!resolvedPath && importPath.startsWith('@/')) {
+        const relativePath = importPath.slice(2)
+        resolvedPath = path.join(this.projectRoot, 'src', relativePath)
       }
     }
 
-    scanForImports(srcDir)
+    if (!resolvedPath)
+      return null
+
+    return resolveWithExtensionsAndIndex(resolvedPath, ['', '.ts', '.tsx', '.js', '.jsx'])
+  }
+
+  populateImportGraphFromFiles(
+    files: ReadonlyArray<{ filePath: string, analysis: ModuleAnalysis }>,
+  ): void {
+    this.fileImporters.clear()
+
+    for (const { filePath, analysis } of files) {
+      for (const importPath of filterRelativeImportSources(analysis.importSources)) {
+        const foundPath = this.resolveImportedFilePath(filePath, importPath)
+        if (!foundPath)
+          continue
+
+        if (!this.fileImporters.has(foundPath))
+          this.fileImporters.set(foundPath, new Set())
+
+        this.fileImporters.get(foundPath)!.add(filePath)
+      }
+    }
+  }
+
+  buildImportGraph(srcDir: string): void {
+    const files = collectScannedFiles(this, [srcDir])
+    this.populateImportGraphFromFiles(files)
   }
 
   isOnlyImportedByClientComponents(filePath: string): boolean {
@@ -447,13 +417,13 @@ export class ServerComponentBuilder {
     return true
   }
 
-  addServerComponent(filePath: string, source?: string) {
+  addServerComponent(filePath: string, source?: string, analysis?: ModuleAnalysis) {
     const code = source ?? fs.readFileSync(filePath, 'utf-8')
+    const moduleAnalysis = analysis ?? this.moduleAnalysisCache.get(filePath, code)
+    const dependencies = filterExternalDependencies(moduleAnalysis.importSources)
+    const hasNodeImports = hasNodeImportsFromAnalysis(moduleAnalysis)
 
-    if (this.isServerAction(code)) {
-      const dependencies = this.extractDependencies(code)
-      const hasNodeImports = this.hasNodeImports(code)
-
+    if (moduleAnalysis.directives.hasUseServer) {
       this.serverActions.set(filePath, {
         filePath,
         originalCode: code,
@@ -463,11 +433,8 @@ export class ServerComponentBuilder {
       return
     }
 
-    if (!this.isServerComponent(filePath, code))
+    if (!isServerComponentFromAnalysis(filePath, moduleAnalysis, this.htmlOnlyImports))
       return
-
-    const dependencies = this.extractDependencies(code)
-    const hasNodeImports = this.hasNodeImports(code)
 
     this.serverComponents.set(filePath, {
       filePath,
@@ -477,61 +444,31 @@ export class ServerComponentBuilder {
     })
   }
 
-  private isServerAction(code: string): boolean {
-    return getDirectives(code).hasUseServer
+  private isServerAction(code: string, filePath?: string): boolean {
+    if (filePath)
+      return this.moduleAnalysisCache.get(filePath, code).directives.hasUseServer
+
+    return analyzeModuleSource(code).directives.hasUseServer
   }
 
-  private extractDependencies(code: string): string[] {
-    const dependencies: string[] = []
-    let match
+  private extractDependencies(code: string, filePath?: string): string[] {
+    const analysis = filePath
+      ? this.moduleAnalysisCache.get(filePath, code)
+      : analyzeModuleSource(code)
 
-    EXTRACT_DEPENDENCIES_REGEX.lastIndex = 0
-    while (true) {
-      match = EXTRACT_DEPENDENCIES_REGEX.exec(code)
-      if (match === null)
-        break
-
-      const importPath = match[1]
-      if (
-        !importPath.startsWith('.')
-        && !importPath.startsWith('/')
-        && !importPath.startsWith('node:')
-        && !this.isNodeBuiltin(importPath)
-      ) {
-        dependencies.push(importPath)
-      }
-    }
-
-    return [...new Set(dependencies)]
+    return filterExternalDependencies(analysis.importSources)
   }
 
-  private isNodeBuiltin(moduleName: string): boolean {
-    return NODE_BUILTINS.has(moduleName)
+  private hasNodeImports(code: string, filePath?: string): boolean {
+    const analysis = filePath
+      ? this.moduleAnalysisCache.get(filePath, code)
+      : analyzeModuleSource(code)
+
+    return hasNodeImportsFromAnalysis(analysis)
   }
 
-  private hasNodeImports(code: string): boolean {
-    return (
-      code.includes('from \'node:')
-      || code.includes('from "node:')
-      || code.includes('from \'fs\'')
-      || code.includes('from "fs"')
-      || code.includes('from \'path\'')
-      || code.includes('from "path"')
-      || code.includes('from \'os\'')
-      || code.includes('from "os"')
-      || code.includes('from \'crypto\'')
-      || code.includes('from "crypto"')
-      || code.includes('from \'util\'')
-      || code.includes('from "util"')
-      || code.includes('from \'stream\'')
-      || code.includes('from "stream"')
-      || code.includes('from \'events\'')
-      || code.includes('from "events"')
-    )
-  }
-
-  async getTransformedComponentsForDevelopment(): Promise<Array<{ id: string, code: string }>> {
-    const components: Array<{ id: string, code: string }> = []
+  async getTransformedComponentsForDevelopment(): Promise<Array<{ id: string, code: string, isAction: boolean }>> {
+    const components: Array<{ id: string, code: string, isAction: boolean }> = []
 
     for (const [filePath] of this.serverComponents) {
       const relativePath = path.relative(this.projectRoot, filePath)
@@ -542,6 +479,7 @@ export class ServerComponentBuilder {
       components.push({
         id: componentId,
         code: transformedCode,
+        isAction: false,
       })
     }
 
@@ -554,6 +492,7 @@ export class ServerComponentBuilder {
       components.push({
         id: actionId,
         code: transformedCode,
+        isAction: true,
       })
     }
 
@@ -660,7 +599,7 @@ const ${importName} = (props) => {
           if (!isClient)
             continue
 
-          const componentId = this.getLegacyComponentReferenceId(actualPath)
+          const componentId = this.getComponentReferenceId(actualPath)
 
           const replacement = `// Component reference: ${componentName}
 const ${importName} = (props) => {
@@ -695,6 +634,39 @@ const ${importName} = (props) => {
 
   private isPageComponent(inputPath: string): boolean {
     return inputPath.includes('/app/') || inputPath.includes('\\app\\')
+  }
+
+  private createRolldownModuleInfoPlugin(filePath: string): Plugin {
+    const self = this
+    const externalDeps = new Set<string>()
+
+    return {
+      name: 'rari-rolldown-module-info',
+      moduleParsed(moduleInfo) {
+        for (const id of moduleInfo.importedIds) {
+          if (!id.startsWith('.') && !id.startsWith('/') && !id.startsWith('node:') && !isNodeBuiltinModule(id))
+            externalDeps.add(id)
+        }
+
+        for (const id of moduleInfo.dynamicallyImportedIds) {
+          if (!id.startsWith('.') && !id.startsWith('/') && !id.startsWith('node:') && !isNodeBuiltinModule(id))
+            externalDeps.add(id)
+        }
+      },
+      buildEnd() {
+        if (externalDeps.size === 0)
+          return
+
+        const dependencies = [...externalDeps].sort()
+        const component = self.serverComponents.get(filePath) || self.serverActions.get(filePath)
+        if (component)
+          component.dependencies = dependencies
+
+        const cached = self.buildCache.get(filePath)
+        if (cached)
+          cached.bundledDependencies = dependencies
+      },
+    }
   }
 
   private createBuildPlugins(
@@ -761,7 +733,7 @@ const ${importName} = (props) => {
 
           if (
             source.startsWith('node:')
-            || self.isNodeBuiltin(source)
+            || isNodeBuiltinModule(source)
             || source === 'react'
             || source === 'react-dom'
             || source === 'react/jsx-runtime'
@@ -797,11 +769,13 @@ const ${importName} = (props) => {
                 }
 
                 try {
-                  const content = fs.readFileSync(pathWithExt, 'utf-8')
-                  if (hasTopLevelUseServerDirective(content)) {
+                  const analysis = self.moduleAnalysisCache.get(pathWithExt)
+                  if (analysis.directives.hasUseServer) {
                     const actionId = self.getComponentId(pathWithExt)
-                    const hasDefault = hasDefaultExport(content)
-                    serverActionRefs.set(pathWithExt, { actionId, hasDefaultExport: hasDefault })
+                    serverActionRefs.set(pathWithExt, {
+                      actionId,
+                      hasDefaultExport: analysis.hasDefaultExport,
+                    })
                     return { id: `\0server-action:${pathWithExt}` }
                   }
                 }
@@ -822,25 +796,7 @@ const ${importName} = (props) => {
             const componentId = (clientComponentRefs.get(filePath) || (relativePath.startsWith('..') ? filePath : relativePath)).replace(BACKSLASH_REGEX, '/')
 
             return {
-              code: `
-function registerClientReference(clientReference, id, exportName) {
-  const key = id + '#' + exportName;
-  const clientProxy = {};
-  Object.defineProperty(clientProxy, '$$typeof', {
-    value: Symbol.for('react.client.reference'),
-    enumerable: false
-  });
-  Object.defineProperty(clientProxy, '$$id', {
-    value: key,
-    enumerable: false
-  });
-  Object.defineProperty(clientProxy, '$$async', {
-    value: false,
-    enumerable: false
-  });
-  return clientProxy;
-}
-
+              code: `import { registerClientReference } from ${JSON.stringify(RSC_REFERENCES_IMPORT)};
 export default registerClientReference(null, ${JSON.stringify(componentId)}, "default");
 `,
               moduleType: 'js',
@@ -1042,7 +998,7 @@ export default registerClientReference(null, ${JSON.stringify(componentId)}, "de
           if (source.startsWith('\0'))
             return null
 
-          if (source.startsWith('node:') || self.isNodeBuiltin(source))
+          if (source.startsWith('node:') || isNodeBuiltinModule(source))
             return { id: source, external: true }
 
           const externalPackages = [
@@ -1058,14 +1014,14 @@ export default registerClientReference(null, ${JSON.stringify(componentId)}, "de
 
           const externalPackageMappings: Record<string, string | null> = {
             'rari/runtime/cache-wrapper': 'node_modules/rari/dist/runtime/cache-wrapper.mjs',
-            'react-server-dom-rari/server': 'node_modules/rari/dist/runtime/react-server-dom-shim.mjs',
+            'react-server-dom-rari/server': 'node_modules/rari/dist/runtime/rsc-references.mjs',
           }
 
           if (source in externalPackageMappings) {
             return { id: source, external: true }
           }
 
-          if (source === 'rari' || source === 'rari/client')
+          if (source === 'rari')
             return null
 
           if (!source.startsWith('.') && !source.startsWith('/'))
@@ -1074,10 +1030,11 @@ export default registerClientReference(null, ${JSON.stringify(componentId)}, "de
           return null
         },
       },
+      self.createRolldownModuleInfoPlugin(inputPath),
       {
         name: 'use-cache',
         async transform(code: string, id: string) {
-          if (!self.options.experimental?.useCache)
+          if (!self.options.experimental?.useCache && !self.options.experimental?.useCacheRemote)
             return null
 
           const transform = await getUseCacheTransform()
@@ -1279,6 +1236,11 @@ export default registerClientReference(null, ${JSON.stringify(componentId)}, "de
       serverConfig.useCache = {
         remote: this.options.experimental.useCacheRemote,
       }
+      if (!this.options.experimental.useCache) {
+        console.warn(
+          '[server-build] experimental.useCacheRemote is set without experimental.useCache; the \'use cache\' transform will still run because useCacheRemote is configured.',
+        )
+      }
     }
 
     const serverConfigPath = path.join(
@@ -1307,36 +1269,48 @@ export default registerClientReference(null, ${JSON.stringify(componentId)}, "de
     return manifest
   }
 
+  async buildMdxRegistry(mdxOptions?: MdxPluginOptions): Promise<void> {
+    const entries = resolveMdxRegistryEntries({
+      projectRoot: this.projectRoot,
+      mdxOptions,
+      alias: this.options.alias || {},
+      cache: this.moduleAnalysisCache,
+    })
+
+    const manifestPath = path.join(this.options.outDir, this.options.manifestPath)
+    let manifest: ServerComponentManifest
+
+    if (fs.existsSync(manifestPath)) {
+      const content = await fs.promises.readFile(manifestPath, 'utf-8')
+      manifest = JSON.parse(content) as ServerComponentManifest
+    }
+    else {
+      manifest = {
+        components: {},
+        buildTime: new Date().toISOString(),
+      }
+    }
+
+    manifest.mdxRegistry = entries.map(entry => ({
+      name: entry.name,
+      id: entry.moduleId,
+      client: entry.client,
+    }))
+
+    await fs.promises.writeFile(
+      manifestPath,
+      JSON.stringify(manifest, null, 2),
+      'utf-8',
+    )
+  }
+
   async buildSSRClientComponents(): Promise<void> {
     const ssrOutDir = path.join(this.options.outDir, 'ssr')
     await fs.promises.mkdir(ssrOutDir, { recursive: true })
 
-    const clientFiles: Array<{ filePath: string, code: string }> = []
-    const srcDir = path.join(this.projectRoot, 'src')
-
-    const scanForClientComponents = (dir: string) => {
-      if (!fs.existsSync(dir))
-        return
-      const entries = fs.readdirSync(dir, { withFileTypes: true })
-      for (const entry of entries) {
-        const fullPath = path.join(dir, entry.name)
-        if (entry.isDirectory()) {
-          if (entry.name === 'node_modules')
-            continue
-          scanForClientComponents(fullPath)
-        }
-        else if (entry.isFile() && TSX_EXT_REGEX.test(entry.name)) {
-          try {
-            const code = fs.readFileSync(fullPath, 'utf-8')
-            if (hasTopLevelUseClientDirective(code))
-              clientFiles.push({ filePath: fullPath, code })
-          }
-          catch {}
-        }
-      }
-    }
-
-    scanForClientComponents(srcDir)
+    const clientFiles: Array<{ filePath: string, code: string }> = [
+      ...this.getClientComponentFiles(),
+    ]
 
     for (const extPath of this.discoveredExternalClientComponents) {
       if (clientFiles.some(f => f.filePath === extPath))
@@ -1742,40 +1716,7 @@ export default registerClientReference(null, ${JSON.stringify(componentId)}, "de
     }
 
     if (hasClientComponents) {
-      const functionDefinition = `
-function registerClientReference(clientReference, id, exportName) {
-  const key = id + '#' + exportName;
-
-  const clientProxy = {};
-
-  Object.defineProperty(clientProxy, '$$typeof', {
-    value: Symbol.for('react.client.reference'),
-    enumerable: false
-  });
-
-  Object.defineProperty(clientProxy, '$$id', {
-    value: key,
-    enumerable: false
-  });
-
-  Object.defineProperty(clientProxy, '$$async', {
-    value: false,
-    enumerable: false
-  });
-
-  try {
-    if (typeof globalThis.registerClientComponent === 'function') {
-      globalThis.registerClientComponent(key, id, clientProxy);
-    }
-  } catch (error) {
-    console.error('[rari] Build: Failed to register client reference:', error);
-  }
-
-  return clientProxy;
-}
-
-`
-      transformedCode = functionDefinition + transformedCode
+      transformedCode = `import { registerClientReference } from ${JSON.stringify(RSC_REFERENCES_IMPORT)};\n\n${transformedCode}`
     }
 
     for (const { original, replacement } of replacements)
@@ -1827,17 +1768,17 @@ function registerClientReference(clientReference, id, exportName) {
     const componentId = this.getComponentId(filePath)
 
     const code = await fs.promises.readFile(filePath, 'utf-8')
-    const dependencies = this.extractDependencies(code)
-    const hasNodeImports = this.hasNodeImports(code)
+    const sourceDependencies = this.extractDependencies(code, filePath)
+    const hasNodeImports = this.hasNodeImports(code, filePath)
 
     const componentData = {
       filePath,
       originalCode: code,
-      dependencies,
+      dependencies: sourceDependencies,
       hasNodeImports,
     }
 
-    if (this.isServerAction(code)) {
+    if (this.isServerAction(code, filePath)) {
       this.serverActions.set(filePath, componentData)
       this.serverComponents.delete(filePath)
     }
@@ -1859,8 +1800,12 @@ function registerClientReference(clientReference, id, exportName) {
     if (
       cached
       && cached.timestamp >= fileTimestamp
-      && JSON.stringify(cached.dependencies) === JSON.stringify(dependencies)
+      && JSON.stringify(cached.sourceDependencies) === JSON.stringify(sourceDependencies)
     ) {
+      const storedComponent = this.serverActions.get(filePath) || this.serverComponents.get(filePath)
+      if (storedComponent && cached.bundledDependencies.length > 0)
+        storedComponent.dependencies = cached.bundledDependencies
+
       await fs.promises.writeFile(fullBundlePath, cached.code, 'utf-8')
       await this.updateManifestForComponent(componentId, filePath, relativeBundlePath, cached.css)
       return {
@@ -1879,11 +1824,13 @@ function registerClientReference(clientReference, id, exportName) {
     )
     const css = await this.writeComponentCssAsset(componentId, built.css)
 
+    const storedComponent = this.serverActions.get(filePath) || this.serverComponents.get(filePath)
     this.buildCache.set(filePath, {
       code: built.code,
       css,
       timestamp: Date.now(),
-      dependencies,
+      sourceDependencies,
+      bundledDependencies: storedComponent?.dependencies ?? sourceDependencies,
     })
 
     await this.updateManifestForComponent(componentId, filePath, relativeBundlePath, css)
@@ -1938,8 +1885,8 @@ function registerClientReference(clientReference, id, exportName) {
         relativePath: path.relative(this.projectRoot, filePath),
         bundlePath,
         moduleSpecifier,
-        dependencies: this.extractDependencies(code),
-        hasNodeImports: this.hasNodeImports(code),
+        dependencies: this.extractDependencies(code, filePath),
+        hasNodeImports: this.hasNodeImports(code, filePath),
         css,
       }
     }
@@ -1982,8 +1929,45 @@ function registerClientReference(clientReference, id, exportName) {
   }
 }
 
-export function hasComponentExport(code: string): boolean {
-  return hasDefaultExport(code)
+export interface DirectoryScanResult {
+  serverComponentPaths: string[]
+  clientComponentPaths: string[]
+}
+
+interface ScannedFile {
+  filePath: string
+  cacheKey: string
+  code: string
+  analysis: ModuleAnalysis
+}
+
+function collectScannedFiles(
+  builder: ServerComponentBuilder,
+  dirs: string[],
+): ScannedFile[] {
+  const files: ScannedFile[] = []
+
+  for (const fullPath of collectSourceFilePaths(dirs)) {
+    try {
+      const cacheKey = resolveModuleCachePath(fullPath)
+      const code = fs.readFileSync(fullPath, 'utf-8')
+      const analysis = builder.getModuleAnalysis(fullPath, code)
+      files.push({ filePath: fullPath, cacheKey, code, analysis })
+    }
+    catch (error) {
+      console.warn(
+        `[server-build] Error reading ${fullPath}:`,
+        error instanceof Error ? error.message : error,
+      )
+    }
+  }
+
+  return files
+}
+
+export function hasComponentExport(code: string, analysis?: ModuleAnalysis): boolean {
+  const moduleAnalysis = analysis ?? analyzeModuleSource(code)
+  return moduleAnalysis.hasComponentExport
     || EXPORTED_FUNCTION_REGEX.test(code)
     || EXPORTED_DEFAULT_ARROW_REGEX.test(code)
     || EXPORTED_CONST_FUNCTION_REGEX.test(code)
@@ -1993,50 +1977,55 @@ export function isEligibleServerComponent(
   filePath: string,
   code: string,
   builder: ServerComponentBuilder,
+  analysis?: ModuleAnalysis,
+  cacheKey?: string,
 ): boolean {
   const fileName = path.basename(filePath)
   if (SPECIAL_FILE_REGEX.test(fileName) || fileName.endsWith('.d.ts'))
     return false
 
-  if (hasTopLevelUseClientDirective(code))
+  const moduleAnalysis = analysis ?? builder.getModuleAnalysis(filePath, code)
+
+  if (moduleAnalysis.directives.hasUseClient)
     return false
 
-  if (hasTopLevelUseServerDirective(code))
+  if (moduleAnalysis.directives.hasUseServer)
     return true
 
   if (builder.isOnlyImportedByClientComponents(filePath))
     return false
 
-  return builder.isServerComponent(filePath, code) && hasComponentExport(code)
+  return isServerComponentFromAnalysis(filePath, moduleAnalysis, builder.getHtmlOnlyImports(), cacheKey)
+    && hasComponentExport(code, moduleAnalysis)
 }
 
-export function scanDirectory(dir: string, builder: ServerComponentBuilder, isTopLevel = true) {
-  if (isTopLevel)
-    builder.buildImportGraph(dir)
+export function scanDirectory(
+  dir: string,
+  builder: ServerComponentBuilder,
+  additionalDirs: string[] = [],
+): DirectoryScanResult {
+  const dirs = normalizeScanDirs(dir, additionalDirs)
 
-  const entries = fs.readdirSync(dir, { withFileTypes: true })
+  const files = collectScannedFiles(builder, dirs)
+  builder.clearClientComponentFiles()
+  builder.populateImportGraphFromFiles(files)
 
-  for (const entry of entries) {
-    const fullPath = path.join(dir, entry.name)
+  const serverComponentPaths: string[] = []
+  const clientComponentPaths: string[] = []
 
-    if (entry.isDirectory()) {
-      scanDirectory(fullPath, builder, false)
+  for (const { filePath, cacheKey, code, analysis } of files) {
+    if (analysis.directives.hasUseClient) {
+      clientComponentPaths.push(filePath)
+      builder.recordClientComponent(filePath, code)
     }
-    else if (entry.isFile() && TSX_EXT_REGEX.test(entry.name)) {
-      try {
-        const code = fs.readFileSync(fullPath, 'utf-8')
 
-        if (isEligibleServerComponent(fullPath, code, builder))
-          builder.addServerComponent(fullPath, code)
-      }
-      catch (error) {
-        console.warn(
-          `[server-build] Error checking ${fullPath}:`,
-          error instanceof Error ? error.message : error,
-        )
-      }
+    if (isEligibleServerComponent(filePath, code, builder, analysis, cacheKey)) {
+      builder.addServerComponent(filePath, code, analysis)
+      serverComponentPaths.push(filePath)
     }
   }
+
+  return { serverComponentPaths, clientComponentPaths }
 }
 
 export function createServerBuildPlugin(
@@ -2054,18 +2043,20 @@ export function createServerBuildPlugin(
       projectRoot = config.root
       isDev = config.command === 'serve'
 
+      const excludeAliases = new Set(['react', 'react-dom', 'react/jsx-runtime', 'react/jsx-dev-runtime', 'react-dom/client'])
+
       const alias: Record<string, string> = {}
       if (config.resolve?.alias) {
         const aliasConfig = config.resolve.alias
         if (Array.isArray(aliasConfig)) {
           aliasConfig.forEach((entry) => {
-            if (typeof entry.find === 'string' && typeof entry.replacement === 'string')
+            if (typeof entry.find === 'string' && typeof entry.replacement === 'string' && !excludeAliases.has(entry.find))
               alias[entry.find] = entry.replacement
           })
         }
         else if (typeof aliasConfig === 'object') {
           Object.entries(aliasConfig).forEach(([key, value]) => {
-            if (typeof value === 'string')
+            if (typeof value === 'string' && !excludeAliases.has(key))
               alias[key] = value
           })
         }
@@ -2100,13 +2091,20 @@ export function createServerBuildPlugin(
 
       const srcDir = path.join(projectRoot, 'src')
       if (fs.existsSync(srcDir))
-        scanDirectory(srcDir, builder)
+        scanDirectory(srcDir, builder, Object.values(resolvedAliases))
     },
 
     async closeBundle() {
       if (builder) {
         await builder.buildServerComponents()
         await builder.buildSSRClientComponents()
+
+        try {
+          await builder.buildMdxRegistry(options.mdx)
+        }
+        catch (error) {
+          console.warn('[rari] Failed to build MDX component registry:', error)
+        }
 
         try {
           const { generateRobotsFile } = await import('../router/robots-generator')
@@ -2155,8 +2153,9 @@ export function createServerBuildPlugin(
 
       try {
         const content = await fs.promises.readFile(file, 'utf-8')
+        const analysis = builder.getModuleAnalysis(file, content)
         const isTracked = builder.hasComponent(file)
-        const eligible = isEligibleServerComponent(file, content, builder)
+        const eligible = isEligibleServerComponent(file, content, builder, analysis)
 
         if (!eligible) {
           if (isTracked)
@@ -2166,7 +2165,7 @@ export function createServerBuildPlugin(
         }
 
         if (!isTracked)
-          builder.addServerComponent(file, content)
+          builder.addServerComponent(file, content, analysis)
 
         await builder.rebuildComponent(file)
       }

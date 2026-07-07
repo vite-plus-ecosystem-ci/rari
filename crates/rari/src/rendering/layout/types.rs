@@ -1,7 +1,8 @@
+use bytes::Bytes;
 use rustc_hash::FxHashMap;
-use tokio::sync::mpsc;
+use tokio::sync::mpsc::Receiver;
 
-use crate::{rendering::streaming::RscStream, server::routing::types::ParamValue};
+use crate::server::routing::types::ParamValue;
 
 #[derive(Debug, Clone)]
 #[non_exhaustive]
@@ -181,82 +182,21 @@ pub struct AppleWebAppMetadata {
     pub capable: Option<bool>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
-pub struct BoundaryInfo {
-    pub id: String,
-    pub has_fallback: bool,
-}
-
-#[derive(Debug, Clone)]
-#[non_exhaustive]
-pub struct SuspenseDetectionResult {
-    pub has_suspense: bool,
-    pub boundary_count: usize,
-    pub boundaries: Vec<BoundaryInfo>,
+pub enum ChunkedContentType {
+    Html,
+    RscFlight,
 }
 
 #[non_exhaustive]
 pub enum RenderResult {
     Static(String),
     StaticBinary(Vec<u8>),
-    Streaming(RscStream),
-    FizzHtmlStream {
-        shell: bytes::Bytes,
-        closing: bytes::Bytes,
-        chunks: mpsc::Receiver<Result<Vec<u8>, String>>,
+    Chunked {
+        content_type: ChunkedContentType,
+        shell: Bytes,
+        closing: Bytes,
+        chunks: Receiver<Result<Vec<u8>, String>>,
     },
-}
-
-#[derive(Debug, Clone)]
-#[non_exhaustive]
-pub struct BoundaryPosition {
-    pub boundary_id: String,
-    pub parent_path: Vec<usize>,
-    pub is_in_content_area: bool,
-    pub dom_path: Vec<usize>,
-}
-
-#[derive(Debug, Clone)]
-#[non_exhaustive]
-pub struct LayoutStructure {
-    pub has_navigation: bool,
-    pub navigation_position: Option<usize>,
-    pub content_position: Option<usize>,
-    pub suspense_boundaries: Vec<BoundaryPosition>,
-}
-
-impl LayoutStructure {
-    pub fn new() -> Self {
-        Self {
-            has_navigation: false,
-            navigation_position: None,
-            content_position: None,
-            suspense_boundaries: Vec::new(),
-        }
-    }
-
-    pub fn is_valid(&self) -> bool {
-        if self.has_navigation
-            && let (Some(nav_pos), Some(content_pos)) =
-                (self.navigation_position, self.content_position)
-            && nav_pos >= content_pos
-        {
-            return false;
-        }
-
-        for boundary in &self.suspense_boundaries {
-            if !boundary.is_in_content_area {
-                return false;
-            }
-        }
-
-        true
-    }
-}
-
-impl Default for LayoutStructure {
-    fn default() -> Self {
-        Self::new()
-    }
 }

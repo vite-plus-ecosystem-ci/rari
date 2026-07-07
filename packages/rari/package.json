@@ -38,26 +38,29 @@
   ],
   "exports": {
     ".": {
-      "browser": "./dist/client.mjs",
       "node": "./dist/index.mjs",
       "types": "./dist/index.d.mts",
       "default": "./dist/index.mjs"
     },
-    "./client": {
-      "types": "./dist/client.d.mts",
-      "default": "./dist/client.mjs"
-    },
     "./image": {
-      "types": "./dist/image/index.d.mts",
-      "default": "./dist/image/index.mjs"
+      "types": "./dist/image.d.mts",
+      "default": "./dist/image.mjs"
     },
     "./mdx": {
       "types": "./dist/mdx.d.mts",
       "default": "./dist/mdx.mjs"
     },
+    "./mdx/define": {
+      "types": "./dist/mdx/define.d.mts",
+      "default": "./dist/mdx/define.mjs"
+    },
+    "./mdx/registry": {
+      "types": "./dist/mdx/registry.d.mts",
+      "default": "./dist/mdx/registry.mjs"
+    },
     "./og": {
-      "types": "./dist/og/index.d.mts",
-      "default": "./dist/og/index.mjs"
+      "types": "./dist/og.d.mts",
+      "default": "./dist/og.mjs"
     },
     "./package.json": "./package.json",
     "./router": {
@@ -76,9 +79,9 @@
       "types": "./dist/runtime/entry-client.d.mts",
       "default": "./dist/runtime/entry-client.mjs"
     },
-    "./runtime/react-server-dom-shim": {
-      "types": "./dist/runtime/react-server-dom-shim.d.mts",
-      "default": "./dist/runtime/react-server-dom-shim.mjs"
+    "./runtime/rsc-references": {
+      "types": "./dist/runtime/rsc-references.d.mts",
+      "default": "./dist/runtime/rsc-references.mjs"
     },
     "./runtime/rsc-client-runtime": {
       "types": "./dist/runtime/rsc-client-runtime.d.mts",
@@ -103,15 +106,21 @@
     "node": ">=22.18.0"
   },
   "scripts": {
-    "build": "pnpm --silent clean && pnpm typecheck && vp pack",
+    "build": "pnpm typecheck && vp pack",
     "clean": "node --eval \"import('node:fs').then(fs => fs.rmSync('dist', { recursive: true, force: true }))\"",
     "lint": "vp lint",
     "lint:fix": "vp lint --fix",
     "typecheck": "tsgo"
   },
   "peerDependencies": {
+    "@mdx-js/mdx": "catalog:mdx",
     "react": "catalog:react",
     "react-dom": "catalog:react"
+  },
+  "peerDependenciesMeta": {
+    "@mdx-js/mdx": {
+      "optional": true
+    }
   },
   "dependencies": {
     "lightningcss": "catalog:build",
@@ -128,12 +137,14 @@
     "rari-win32-x64": "0.14.12"
   },
   "devDependencies": {
+    "@mdx-js/mdx": "catalog:mdx",
     "@rari/deploy": "workspace:*",
     "@rari/logger": "workspace:*",
     "@types/node": "catalog:typescript",
     "@types/react": "catalog:react",
     "@types/react-dom": "catalog:react",
     "@typescript/native-preview": "catalog:typescript",
+    "vite": "catalog:build",
     "vite-plus": "catalog:build"
   }
 }

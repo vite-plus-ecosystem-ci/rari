@@ -1,10 +1,10 @@
-import { getClientComponentAsync } from './get-client-component'
+import { getClientComponent } from './get-client-component'
 
-export async function preloadModulesFromWireFormat(
-  wireFormat: string,
+export async function preloadModulesFromFlightProtocol(
+  flightProtocol: string,
   preloadedModuleIds?: Set<string>,
 ): Promise<void> {
-  const lines = wireFormat.split('\n')
+  const lines = flightProtocol.split('\n')
   const moduleIds = new Set<string>()
 
   for (const line of lines) {
@@ -49,7 +49,7 @@ export async function preloadModulesFromWireFormat(
   if (moduleIds.size > 0) {
     await Promise.all(Array.from(moduleIds, async (id) => {
       try {
-        const component = await getClientComponentAsync(id)
+        const component = await getClientComponent(id)
 
         if (!component) {
           console.warn(`[rari] Failed to preload component: ${id}`)

@@ -1,5 +1,8 @@
 import type { CSSModulesOptions, Plugin, UserConfig } from 'vite-plus'
 import type { ProxyPluginOptions } from '../proxy/vite-plugin'
+import type { ModuleAnalysis } from './directives'
+import type { MdxPluginOptions } from './mdx-registry'
+import type { RariPlugin } from './plugin-types'
 import type { ServerBuildOptions } from './server-build'
 import type { ServerCacheConfig, ServerCacheLayerConfig } from './server-config'
 import { Buffer } from 'node:buffer'
@@ -19,12 +22,26 @@ import {
   TSX_EXT_REGEX,
   WINDOWS_PATH_REGEX,
 } from '../shared/regex-constants'
+import { clearFileResolverCache, resolveImportToFilePath } from '../shared/utils/file-resolver'
+import {
+  buildNamespaceClientReferenceReplacement,
+  NAMESPACE_IMPORT_LINE_REGEX,
+} from './client-import-transform'
 import { getComponentId } from './component-ids'
-import { getDirectives, hasDefaultExport, hasTopLevelUseClientDirective, hasTopLevelUseServerDirective } from './directives'
-import { resolveIndexFile, resolveWithExtensions } from './file-resolver'
+import { hasDefaultExport } from './directives'
 import { HMRCoordinator } from './hmr-coordinator'
+import { parseHtmlEntryImports } from './html-entry-imports'
 import { scanForImageUsage } from './image-scanner'
-import { createServerBuildPlugin, RARI_CSS_MODULES_PATTERN, scanDirectory, ServerComponentBuilder } from './server-build'
+import { transformDefineMdxComponents } from './mdx-components-transform'
+import {
+  generateMdxRegistryModule,
+  isMdxRegistryModuleId,
+  resolveMdxRegistryEntries,
+} from './mdx-registry'
+import { collectClientComponentPaths, invalidateModuleCachePath, ModuleAnalysisCache, resolveModuleCachePath } from './module-analysis-cache'
+import { toRariPlugins } from './plugin-types'
+import { createServerBuildPlugin, isServerComponentFromAnalysis, RARI_CSS_MODULES_PATTERN, scanDirectory, ServerComponentBuilder } from './server-build'
+import { normalizeScanDirs } from './source-file-walker'
 import { getUseCacheTransform } from './use-cache-loader'
 
 const DIST_NOT_BUILT_ERROR = '[rari] Runtime dist not built. Run `pnpm build` in the rari package first.'
@@ -36,7 +53,6 @@ const IMPORT_SPECIFIER_REGEX = /import\s+(\{[^}]+\})\s+from\s+["']\.\.?\/([^"']+
 const IMPORT_NAMESPACE_REGEX = /import\s+(\*\s+as\s+\w+)\s+from\s+["']\.\.?\/([^"']+)["'];?/g
 const IMPORT_DEFAULT_REGEX = /import\s+(\w+)\s+from\s+["']\.\.?\/([^"']+)["'];?/g
 const IMPORT_SIDE_EFFECT_REGEX = /import\s+["']\.\.?\/([^"']+)["'];?/g
-const HTML_IMPORT_REGEX = /import\s*(?:\(\s*)?["']([^"']+)["']\)?/g
 const NAMED_EXPORT_REGEX = /export\s*\{([^}]+)\}/g
 const AS_SPLIT_REGEX = /\s+as\s+/
 const EXPORT_DEFAULT_FUNCTION_OR_CLASS_REGEX = /export\s+default\s+(?:function|class)\s+\w+/
@@ -55,6 +71,54 @@ const RSC_CLIENT_IMPORT_REGEX = /from(\s*)(['"])(?:\.\/vendor\/react-flight-clie
 const JSX_TEST_REGEX = /\bJSX\b/
 const IMPORT_SPECIFIERS_REGEX = /\{([^}]*)\}/
 const USE_CLIENT_DIRECTIVE_LINE_REGEX = /^['"]use client['"];?\s*\n/
+
+interface ClientReferenceSpecifier {
+  bindingName: string
+  exportName: string
+}
+
+function parseClientImportSpecifiers(line: string, importedDefault?: string): ClientReferenceSpecifier[] {
+  const specifiers: ClientReferenceSpecifier[] = []
+
+  if (importedDefault)
+    specifiers.push({ bindingName: importedDefault, exportName: 'default' })
+
+  const namedBlock = line.match(/\{([^}]+)\}/)?.[1]
+  if (namedBlock) {
+    for (const part of namedBlock.split(',')) {
+      const trimmed = part.trim()
+      if (!trimmed)
+        continue
+
+      const asParts = trimmed.split(/\s+as\s+/i)
+      if (asParts.length === 2 && asParts[0] && asParts[1]) {
+        specifiers.push({
+          bindingName: asParts[1].trim(),
+          exportName: asParts[0].trim(),
+        })
+      }
+      else {
+        specifiers.push({ bindingName: trimmed, exportName: trimmed })
+      }
+    }
+  }
+
+  return specifiers
+}
+
+function buildClientReferenceReplacement(
+  specifiers: ClientReferenceSpecifier[],
+  resolvedImportPath: string,
+): string {
+  return `import { registerClientReference } from "react-server-dom-rari/server";
+${specifiers.map(({ bindingName, exportName }) => `const ${bindingName} = registerClientReference(
+  function() {
+    throw new Error("Attempted to call ${bindingName} from the server but it's on the client. It can only be rendered as a Component or passed to props of a Client Component.");
+  },
+  ${JSON.stringify(resolvedImportPath)},
+  ${JSON.stringify(exportName)}
+);`).join('\n')}`
+}
 
 export interface RouterPluginOptions {
   appDir?: string
@@ -103,6 +167,7 @@ export interface RariOptions {
     useCache?: boolean
     useCacheRemote?: ServerCacheLayerConfig
   }
+  mdx?: MdxPluginOptions
 }
 
 const DEFAULT_IMAGE_CONFIG = {
@@ -218,8 +283,8 @@ async function loadEntryClient(imports: string, registrations: string): Promise<
     .replace('/*! @preserve CLIENT_COMPONENT_REGISTRATIONS_PLACEHOLDER */', registrations)
 }
 
-async function loadReactServerDomShim(): Promise<string> {
-  return loadRuntimeFile('react-server-dom-shim.mjs')
+async function loadRscReferences(): Promise<string> {
+  return loadRuntimeFile('rsc-references.mjs')
 }
 
 async function writeImageConfig(projectRoot: string, options: RariOptions): Promise<void> {
@@ -241,84 +306,95 @@ async function writeImageConfig(projectRoot: string, options: RariOptions): Prom
   fs.writeFileSync(configPath, JSON.stringify(imageConfig, null, 2))
 }
 
-function scanForClientComponents(srcDir: string, additionalDirs: string[] = []): Set<string> {
-  const clientComponents = new Set<string>()
-
-  function scanDirectory(dir: string) {
-    if (!fs.existsSync(dir))
-      return
-
-    const entries = fs.readdirSync(dir, { withFileTypes: true })
-
-    for (const entry of entries) {
-      const fullPath = path.join(dir, entry.name)
-
-      if (entry.isDirectory()) {
-        if (entry.name === 'node_modules')
-          continue
-        scanDirectory(fullPath)
-      }
-      else if (entry.isFile() && TSX_EXT_REGEX.test(entry.name)) {
-        try {
-          const content = fs.readFileSync(fullPath, 'utf8')
-          if (hasTopLevelUseClientDirective(content)) {
-            clientComponents.add(fullPath)
-          }
-        }
-        catch (err) {
-          if ((err as any)?.code !== 'ENOENT') {
-            console.warn('[rari] Unexpected error during file scan:', fullPath, err)
-          }
-        }
-      }
-    }
-  }
-
-  scanDirectory(srcDir)
-
-  for (const dir of additionalDirs) {
-    if (fs.existsSync(dir))
-      scanDirectory(dir)
-  }
-
-  return clientComponents
-}
-
 export function defineRariOptions(config: RariOptions): RariOptions {
   return config
 }
 
-export function rari(options: RariOptions = {}): Plugin[] {
+export function rari(options: RariOptions = {}): RariPlugin[] {
   const componentTypeCache = new Map<string, 'client' | 'server' | 'unknown'>()
   const clientComponents = new Set<string>()
-  const directiveCache = new Map<string, { hasUseServer: boolean, hasUseClient: boolean }>()
+  const moduleAnalysisCache = new ModuleAnalysisCache()
+  let devServerComponentBuilder: ServerComponentBuilder | null = null
   let rustServerProcess: any = null
 
   let hmrCoordinator: HMRCoordinator | null = null
   const resolvedAlias: Record<string, string> = {}
+  let cachedMdxRegistryModule: string | null = null
+
+  function invalidateMdxRegistryModuleCache(): void {
+    cachedMdxRegistryModule = null
+  }
+
+  function buildMdxRegistryModule(): string {
+    if (cachedMdxRegistryModule)
+      return cachedMdxRegistryModule
+
+    const projectRoot = options.projectRoot || process.cwd()
+    const entries = resolveMdxRegistryEntries({
+      projectRoot,
+      mdxOptions: options.mdx,
+      alias: resolvedAlias,
+      cache: moduleAnalysisCache,
+    })
+
+    cachedMdxRegistryModule = generateMdxRegistryModule(entries)
+    return cachedMdxRegistryModule
+  }
+
+  function getComponentType(filePath: string): 'client' | 'server' | 'unknown' | undefined {
+    return componentTypeCache.get(resolveModuleCachePath(filePath))
+  }
+
+  function setComponentType(filePath: string, type: 'client' | 'server' | 'unknown'): void {
+    componentTypeCache.set(resolveModuleCachePath(filePath), type)
+  }
+
+  function deleteComponentType(filePath: string): void {
+    invalidateModuleCachePath(componentTypeCache, filePath)
+  }
+
+  function addTrackedClientComponent(filePath: string): void {
+    clientComponents.add(resolveModuleCachePath(filePath))
+  }
+
+  function hasTrackedClientComponent(filePath: string): boolean {
+    return clientComponents.has(resolveModuleCachePath(filePath))
+  }
+
+  function removeTrackedClientComponent(filePath: string): void {
+    clientComponents.delete(filePath)
+    try {
+      clientComponents.delete(fs.realpathSync(filePath))
+    }
+    catch {
+      clientComponents.delete(path.resolve(filePath))
+    }
+  }
+
+  function getKnownClientComponentPaths(): Set<string> {
+    const paths = new Set(clientComponents)
+
+    if (devServerComponentBuilder) {
+      for (const componentPath of devServerComponentBuilder.getClientComponentPaths())
+        paths.add(componentPath)
+    }
+
+    return paths
+  }
 
   function getModuleDirectives(id: string): { hasUseServer: boolean, hasUseClient: boolean } {
-    if (directiveCache.has(id))
-      return directiveCache.get(id)!
-
     const result = { hasUseServer: false, hasUseClient: false }
 
     const normalizedId = id.replace(BACKSLASH_REGEX, '/')
-    if (!TSX_EXT_REGEX.test(normalizedId) || !normalizedId.includes('/src/')) {
-      directiveCache.set(id, result)
+    if (!TSX_EXT_REGEX.test(normalizedId) || !normalizedId.includes('/src/'))
       return result
-    }
 
     try {
-      const code = fs.readFileSync(id, 'utf-8')
-      const directives = getDirectives(code)
-      result.hasUseServer = directives.hasUseServer
-      result.hasUseClient = directives.hasUseClient
-      directiveCache.set(id, result)
+      const analysis = moduleAnalysisCache.get(id)
+      result.hasUseServer = analysis.directives.hasUseServer
+      result.hasUseClient = analysis.directives.hasUseClient
     }
-    catch {
-      directiveCache.set(id, result)
-    }
+    catch {}
 
     return result
   }
@@ -326,7 +402,10 @@ export function rari(options: RariOptions = {}): Plugin[] {
   let htmlEntryImports: Set<string> | null = null
   let lastIndexHtmlMtime: number | null = null
 
-  function getHtmlEntryImports(): Set<string> {
+  function getHtmlEntryImports(): ReadonlySet<string> {
+    if (devServerComponentBuilder)
+      return devServerComponentBuilder.getHtmlOnlyImports()
+
     const projectRoot = options.projectRoot || process.cwd()
     const indexHtmlPath = path.join(projectRoot, 'index.html')
 
@@ -343,18 +422,7 @@ export function rari(options: RariOptions = {}): Plugin[] {
       return htmlEntryImports
     }
 
-    htmlEntryImports = new Set()
-    try {
-      const htmlContent = fs.readFileSync(indexHtmlPath, 'utf-8')
-      for (const match of htmlContent.matchAll(HTML_IMPORT_REGEX)) {
-        const importPath = match[1]
-        if (importPath.startsWith('/src/')) {
-          htmlEntryImports.add(path.join(projectRoot, importPath.slice(1)))
-        }
-      }
-    }
-    catch {}
-
+    htmlEntryImports = parseHtmlEntryImports(projectRoot)
     return htmlEntryImports
   }
 
@@ -362,32 +430,23 @@ export function rari(options: RariOptions = {}): Plugin[] {
     if (filePath.includes('node_modules') || isRariInternalFile(filePath))
       return false
 
-    if (getHtmlEntryImports().has(filePath))
-      return false
-
-    let pathForFsOperations
-    try {
-      pathForFsOperations = fs.realpathSync(filePath)
-    }
-    catch {
-      return false
-    }
+    const resolvedPath = resolveModuleCachePath(filePath)
 
     try {
-      const code = fs.readFileSync(pathForFsOperations, 'utf-8')
-      const directives = getDirectives(code)
-
-      if (directives.hasUseServer)
-        return false
-
-      return !directives.hasUseClient
+      const analysis = moduleAnalysisCache.get(filePath)
+      return isServerComponentFromAnalysis(
+        resolvedPath,
+        analysis,
+        getHtmlEntryImports(),
+        resolvedPath,
+      )
     }
     catch {
       return false
     }
   }
 
-  function parseExportedNames(code: string): string[] {
+  function parseExportedNames(code: string, analysis?: ModuleAnalysis): string[] {
     try {
       const exportedNames: string[] = []
       const namedExportMatch = code.matchAll(NAMED_EXPORT_REGEX)
@@ -404,7 +463,7 @@ export function rari(options: RariOptions = {}): Plugin[] {
 
       if (EXPORT_DEFAULT_FUNCTION_OR_CLASS_REGEX.test(code))
         exportedNames.push('default')
-      else if (hasDefaultExport(code))
+      else if (analysis?.hasDefaultExport ?? hasDefaultExport(code))
         exportedNames.push('default')
 
       const declarationExports = code.matchAll(EXPORT_DECLARATION_REGEX)
@@ -420,13 +479,11 @@ export function rari(options: RariOptions = {}): Plugin[] {
     }
   }
 
-  function transformServerModule(code: string, id: string): string {
-    const hasUseServer = hasTopLevelUseServerDirective(code)
-
-    if (!hasUseServer)
+  function transformServerModule(code: string, id: string, analysis: ModuleAnalysis): string {
+    if (!analysis.topLevelUseServer)
       return code
 
-    const exportedNames = parseExportedNames(code)
+    const exportedNames = parseExportedNames(code, analysis)
     if (exportedNames.length === 0)
       return code
 
@@ -478,13 +535,12 @@ if (import.meta.hot) {
     return newCode
   }
 
-  function transformClientModule(code: string, id: string): string {
+  function transformClientModule(code: string, id: string, analysis: ModuleAnalysis): string {
     const projectRoot = options.projectRoot || process.cwd()
-    const isServerFunction = hasTopLevelUseServerDirective(code)
     const isServerComp = isServerComponent(id)
 
-    if (isServerFunction) {
-      const exportedNames = parseExportedNames(code)
+    if (analysis.topLevelUseServer) {
+      const exportedNames = parseExportedNames(code, analysis)
       if (exportedNames.length === 0)
         return ''
 
@@ -508,10 +564,10 @@ if (import.meta.hot) {
       return ''
     }
 
-    if (!hasTopLevelUseClientDirective(code))
+    if (!analysis.topLevelUseClient)
       return code
 
-    const exportedNames = parseExportedNames(code)
+    const exportedNames = parseExportedNames(code, analysis)
     if (exportedNames.length === 0)
       return ''
 
@@ -540,45 +596,15 @@ if (import.meta.hot) {
     return newCode
   }
 
-  function transformClientModuleForClient(code: string, _id: string): string {
-    if (!hasTopLevelUseClientDirective(code))
+  function transformClientModuleForClient(code: string, _id: string, analysis: ModuleAnalysis): string {
+    if (!analysis.topLevelUseClient)
       return code
 
-    const exportedNames = parseExportedNames(code)
+    const exportedNames = parseExportedNames(code, analysis)
     if (exportedNames.length === 0)
       return code
 
     return code.replace(USE_CLIENT_DIRECTIVE_REGEX, '')
-  }
-
-  function resolveImportToFilePath(
-    importPath: string,
-    importerPath: string,
-  ): string {
-    let resolvedImportPath = importPath
-    for (const [alias, replacement] of Object.entries(resolvedAlias)) {
-      if (importPath.startsWith(`${alias}/`)) {
-        resolvedImportPath = importPath.replace(alias, replacement)
-        break
-      }
-      else if (importPath === alias) {
-        resolvedImportPath = replacement
-        break
-      }
-    }
-
-    const resolvedPath = path.resolve(path.dirname(importerPath), resolvedImportPath)
-
-    const extensions = ['.tsx', '.jsx', '.ts', '.js']
-    const withExt = resolveWithExtensions(resolvedPath, extensions)
-    if (withExt)
-      return withExt
-
-    const indexFile = resolveIndexFile(resolvedPath, extensions)
-    if (indexFile)
-      return indexFile
-
-    return `${resolvedPath}.tsx`
   }
 
   let rustServerReady = false
@@ -957,11 +983,26 @@ if (import.meta.hot) {
     },
 
     async transform(code, id) {
+      if (id.endsWith('.mdx'))
+        invalidateMdxRegistryModuleCache()
+
+      if (/\.(?:tsx?|jsx?|mts|mjs)$/.test(id) && code.includes('defineMdxComponents')) {
+        const mdxTransformed = transformDefineMdxComponents({
+          code,
+          id,
+          projectRoot: options.projectRoot || process.cwd(),
+          resolvedAlias,
+        })
+        if (mdxTransformed)
+          return { code: mdxTransformed, map: null }
+      }
+
       if (!TSX_EXT_REGEX.test(id))
         return null
 
+      const originalCode = code
       let wasUseCacheTransformed = false
-      if (options.experimental?.useCache) {
+      if (options.experimental?.useCache || options.experimental?.useCacheRemote) {
         const transform = await getUseCacheTransform()
         if (transform) {
           const useCacheResult = transform(code, id)
@@ -973,47 +1014,49 @@ if (import.meta.hot) {
       }
 
       const environment = (this as any).environment
+      const moduleAnalysis = moduleAnalysisCache.get(id, originalCode)
 
-      if (hasTopLevelUseClientDirective(code)) {
-        componentTypeCache.set(id, 'client')
-        clientComponents.add(id)
+      if (moduleAnalysis.topLevelUseClient) {
+        setComponentType(id, 'client')
+        addTrackedClientComponent(id)
 
         const lines = code.split('\n')
 
         for (const line of lines) {
-          const importMatch = line.match(IMPORT_LINE_REGEX)
-          if (!importMatch)
+          const namespaceMatch = line.match(NAMESPACE_IMPORT_LINE_REGEX)
+          const importMatch = namespaceMatch ? null : line.match(IMPORT_LINE_REGEX)
+          if (!namespaceMatch && !importMatch)
             continue
 
-          const importPath = importMatch[4]
+          const importPath = namespaceMatch?.[2] ?? importMatch![4]
           if (!importPath)
             continue
 
-          const resolvedImportPath = resolveImportToFilePath(importPath, id)
+          const resolvedImportPath = resolveImportToFilePath(importPath, id, resolvedAlias)
 
           if (fs.existsSync(resolvedImportPath)) {
-            componentTypeCache.set(resolvedImportPath, 'client')
-            clientComponents.add(resolvedImportPath)
+            setComponentType(resolvedImportPath, 'client')
+            addTrackedClientComponent(resolvedImportPath)
           }
         }
 
-        return transformClientModuleForClient(code, id)
+        return transformClientModuleForClient(code, id, moduleAnalysis)
       }
 
-      if (componentTypeCache.get(id) === 'client' || clientComponents.has(id))
-        return transformClientModuleForClient(code, id)
+      if (getComponentType(id) === 'client' || hasTrackedClientComponent(id))
+        return transformClientModuleForClient(code, id, moduleAnalysis)
 
       if (isServerComponent(id)) {
-        componentTypeCache.set(id, 'server')
+        setComponentType(id, 'server')
 
         if (
           environment
           && (environment.name === 'rsc' || environment.name === 'ssr')
         ) {
-          return transformServerModule(code, id)
+          return transformServerModule(code, id, moduleAnalysis)
         }
         else {
-          let clientTransformedCode = transformClientModule(code, id)
+          let clientTransformedCode = transformClientModule(code, id, moduleAnalysis)
 
           clientTransformedCode = `// HMR acceptance for server component
 if (import.meta.hot) {
@@ -1032,62 +1075,61 @@ ${clientTransformedCode}`
         }
       }
 
-      if (hasTopLevelUseServerDirective(code)) {
-        componentTypeCache.set(id, 'server')
+      if (moduleAnalysis.topLevelUseServer) {
+        setComponentType(id, 'server')
 
         if (
           environment
           && (environment.name === 'rsc' || environment.name === 'ssr')
         ) {
-          return transformServerModule(code, id)
+          return transformServerModule(code, id, moduleAnalysis)
         }
         else {
-          return transformClientModule(code, id)
+          return transformClientModule(code, id, moduleAnalysis)
         }
       }
 
-      const cachedType = componentTypeCache.get(id)
+      const cachedType = getComponentType(id)
       if (cachedType === 'server') {
         if (
           environment
           && (environment.name === 'rsc' || environment.name === 'ssr')
         ) {
-          return transformServerModule(code, id)
+          return transformServerModule(code, id, moduleAnalysis)
         }
         else {
-          return transformClientModule(code, id)
+          return transformClientModule(code, id, moduleAnalysis)
         }
       }
       if (cachedType === 'client')
-        return transformClientModuleForClient(code, id)
+        return transformClientModuleForClient(code, id, moduleAnalysis)
 
-      componentTypeCache.set(id, 'unknown')
+      setComponentType(id, 'unknown')
 
       const lines = code.split('\n')
       let modifiedCode = code
       let hasServerImports = false
       let needsReactImport = false
-      const importingFileIsClient = hasTopLevelUseClientDirective(code)
-        || componentTypeCache.get(id) === 'client'
-        || id.includes('entry-client')
+      const importingFileIsClient = id.includes('entry-client')
 
       for (const line of lines) {
-        const importMatch = line.match(IMPORT_LINE_REGEX)
-        if (!importMatch)
+        const namespaceMatch = line.match(NAMESPACE_IMPORT_LINE_REGEX)
+        const importMatch = namespaceMatch ? null : line.match(IMPORT_LINE_REGEX)
+        if (!namespaceMatch && !importMatch)
           continue
 
-        const importedDefault = importMatch[1]
-        const importPath = importMatch[4]
-        const resolvedImportPath = resolveImportToFilePath(importPath, id)
+        const importedDefault = importMatch?.[1]
+        const importPath = namespaceMatch?.[2] ?? importMatch![4]
+        const resolvedImportPath = resolveImportToFilePath(importPath, id, resolvedAlias)
 
         const isClientComponent
-          = componentTypeCache.get(resolvedImportPath) === 'client'
+          = getComponentType(resolvedImportPath) === 'client'
             || (fs.existsSync(resolvedImportPath)
-              && hasTopLevelUseClientDirective(fs.readFileSync(resolvedImportPath, 'utf-8')))
+              && moduleAnalysisCache.get(resolvedImportPath).topLevelUseClient)
 
         if (isClientComponent) {
-          componentTypeCache.set(resolvedImportPath, 'client')
-          clientComponents.add(resolvedImportPath)
+          setComponentType(resolvedImportPath, 'client')
+          addTrackedClientComponent(resolvedImportPath)
         }
 
         if (
@@ -1097,17 +1139,30 @@ ${clientTransformedCode}`
         ) {
           if (!importingFileIsClient) {
             const originalImport = line
-            const componentName = importedDefault || 'default'
 
-            const clientRefReplacement = `
-import { registerClientReference } from "react-server-dom-rari/server";
-const ${componentName} = registerClientReference(
-  function() {
-    throw new Error("Attempted to call ${componentName} from the server but it's on the client. It can only be rendered as a Component or passed to props of a Client Component.");
-  },
-  ${JSON.stringify(resolvedImportPath)},
-  ${JSON.stringify(importedDefault || 'default')}
-);`
+            if (namespaceMatch) {
+              const clientRefReplacement = buildNamespaceClientReferenceReplacement(
+                namespaceMatch[1],
+                resolvedImportPath,
+              )
+
+              modifiedCode = modifiedCode.replace(
+                originalImport,
+                clientRefReplacement,
+              )
+              hasServerImports = true
+              needsReactImport = true
+              continue
+            }
+
+            const specifiers = parseClientImportSpecifiers(line, importedDefault)
+            if (specifiers.length === 0)
+              continue
+
+            const clientRefReplacement = buildClientReferenceReplacement(
+              specifiers,
+              resolvedImportPath,
+            )
 
             modifiedCode = modifiedCode.replace(
               originalImport,
@@ -1158,13 +1213,10 @@ const ${componentName} = registerClientReference(
             || modifiedCode.includes('/>')
             || JSX_TEST_REGEX.test(modifiedCode)
 
-        if (
-          !hasTopLevelUseClientDirective(modifiedCode)
-          && hasJsx
-        ) {
+        if (hasJsx) {
           if (isDevMode) {
             modifiedCode = `'use client';\n\n${modifiedCode}`
-            componentTypeCache.set(id, 'client')
+            setComponentType(id, 'client')
           }
         }
 
@@ -1182,8 +1234,6 @@ const ${componentName} = registerClientReference(
       const srcDir = path.join(projectRoot, 'src')
       await writeImageConfig(projectRoot, options)
 
-      let serverComponentBuilder: any = null
-
       const discoverAndRegisterComponents = async () => {
         try {
           const builder = new ServerComponentBuilder(projectRoot, {
@@ -1196,50 +1246,28 @@ const ${componentName} = registerClientReference(
             cacheControl: options.cacheControl,
             cache: options.cache,
             experimental: options.experimental,
+            moduleAnalysisCache,
           })
 
-          serverComponentBuilder = builder
+          devServerComponentBuilder = builder
 
-          if (!hmrCoordinator && serverComponentBuilder) {
+          if (!hmrCoordinator) {
             const serverPort = process.env.SERVER_PORT
               ? Number(process.env.SERVER_PORT)
               : Number(process.env.PORT || process.env.RSC_PORT || 3000)
-            hmrCoordinator = new HMRCoordinator(serverComponentBuilder, serverPort)
+            hmrCoordinator = new HMRCoordinator(builder, serverPort)
           }
-
-          const srcDir = path.join(projectRoot, 'src')
-          const serverComponentPaths: string[] = []
 
           if (fs.existsSync(srcDir)) {
-            const collectServerComponents = (dir: string) => {
-              const entries = fs.readdirSync(dir, { withFileTypes: true })
-              for (const entry of entries) {
-                const fullPath = path.join(dir, entry.name)
-                if (entry.isDirectory()) {
-                  collectServerComponents(fullPath)
-                }
-                else if (entry.isFile() && TSX_EXT_REGEX.test(entry.name)) {
-                  try {
-                    if (isServerComponent(fullPath))
-                      serverComponentPaths.push(fullPath)
-                  }
-                  catch (error) {
-                    console.error(`[rari] Error checking ${fullPath}:`, error)
-                  }
-                }
-              }
+            const scanResult = scanDirectory(srcDir, builder, Object.values(resolvedAlias))
+
+            if (scanResult.serverComponentPaths.length > 0) {
+              server.ws.send({
+                type: 'custom',
+                event: 'rari:server-components-registry',
+                data: { serverComponents: scanResult.serverComponentPaths },
+              })
             }
-
-            collectServerComponents(srcDir)
-            scanDirectory(srcDir, builder)
-          }
-
-          if (serverComponentPaths.length > 0) {
-            server.ws.send({
-              type: 'custom',
-              event: 'rari:server-components-registry',
-              data: { serverComponents: serverComponentPaths },
-            })
           }
 
           const components
@@ -1256,7 +1284,7 @@ const ${componentName} = registerClientReference(
               if (isAppRouterComponent)
                 continue
 
-              if (hasTopLevelUseServerDirective(component.code))
+              if (component.isAction)
                 continue
 
               const registerResponse = await fetch(
@@ -1303,7 +1331,7 @@ const ${componentName} = registerClientReference(
             : Number(process.env.PORT || process.env.RSC_PORT || 3000)
           const baseUrl = `http://localhost:${serverPort}`
 
-          const clientComponentFiles = scanForClientComponents(srcDir, Object.values(resolvedAlias))
+          const clientComponentFiles = getKnownClientComponentPaths()
 
           for (const componentPath of clientComponentFiles) {
             const relativePath = path.relative(process.cwd(), componentPath)
@@ -1342,7 +1370,7 @@ const ${componentName} = registerClientReference(
           return
 
         const { getBinaryPath, getInstallationInstructions } = await import(
-          '../platform',
+          '../cli/platform',
         )
 
         let binaryPath: string
@@ -1426,8 +1454,8 @@ const ${componentName} = registerClientReference(
         }
 
         if (serverReady) {
-          await ensureClientComponentsRegistered()
           await discoverAndRegisterComponents()
+          await ensureClientComponentsRegistered()
         }
         else {
           console.error(
@@ -1441,22 +1469,17 @@ const ${componentName} = registerClientReference(
           if (!isServerComponent(filePath))
             return
 
-          const builder = new ServerComponentBuilder(projectRoot, {
-            outDir: 'dist',
-            rscDir: 'server',
-            manifestPath: 'server/manifest.json',
-            serverConfigPath: 'server/config.json',
-            alias: resolvedAlias,
-            csp: options.csp,
-            cacheControl: options.cacheControl,
-            cache: options.cache,
-            experimental: options.experimental,
-          })
+          if (!devServerComponentBuilder) {
+            await discoverAndRegisterComponents()
+            if (!devServerComponentBuilder)
+              return
+          }
 
-          builder.addServerComponent(filePath)
+          const code = moduleAnalysisCache.getSource(filePath)
+          devServerComponentBuilder.addServerComponent(filePath, code)
 
           const components
-            = await builder.getTransformedComponentsForDevelopment()
+            = await devServerComponentBuilder.getTransformedComponentsForDevelopment()
 
           if (components.length === 0)
             return
@@ -1611,8 +1634,11 @@ const ${componentName} = registerClientReference(
       })
 
       server.watcher.on('change', async (filePath) => {
-        if (TSX_EXT_REGEX.test(filePath))
-          componentTypeCache.delete(filePath)
+        if (TSX_EXT_REGEX.test(filePath)) {
+          deleteComponentType(filePath)
+          removeTrackedClientComponent(filePath)
+          moduleAnalysisCache.invalidate(filePath)
+        }
 
         if (TSX_EXT_REGEX.test(filePath) && filePath.includes(srcDir)) {
           if (isServerComponent(filePath)) {
@@ -1702,6 +1728,10 @@ const ${componentName} = registerClientReference(
         return 'virtual:app-router-provider.tsx'
       if (id === 'virtual:error-boundary-wrapper' || id === 'virtual:error-boundary-wrapper.tsx')
         return 'virtual:error-boundary-wrapper.tsx'
+      if (isMdxRegistryModuleId(id))
+        return 'virtual:rari-mdx-components.ts'
+      if (id === 'virtual:rari-mdx-components' || id === 'virtual:rari-mdx-components.ts')
+        return 'virtual:rari-mdx-components.ts'
 
       if ((id === 'react-server-dom-webpack/client' || id === 'react-server-dom-webpack/client.browser') && importer?.startsWith('virtual:')) {
         try {
@@ -1783,10 +1813,9 @@ const ${componentName} = registerClientReference(
 
         if (environment && environment.name === 'client') {
           try {
-            const code = fs.readFileSync(id, 'utf-8')
-            if (hasTopLevelUseServerDirective(code)) {
-              return transformClientModule(code, id)
-            }
+            const analysis = moduleAnalysisCache.get(id)
+            if (analysis.topLevelUseServer)
+              return transformClientModule(moduleAnalysisCache.getSource(id), id, analysis)
           }
           catch {
             // File doesn't exist or can't be read
@@ -1794,12 +1823,19 @@ const ${componentName} = registerClientReference(
         }
       }
 
+      if (id === 'virtual:rari-mdx-components.ts')
+        return buildMdxRegistryModule()
+
       if (id === 'virtual:rari-entry-client.ts') {
-        const srcDir = path.join(process.cwd(), 'src')
-        const scannedClientComponents = scanForClientComponents(srcDir, Object.values(resolvedAlias))
+        const projectRoot = options.projectRoot || process.cwd()
+        const srcDir = path.join(projectRoot, 'src')
+        const scannedClientComponents = collectClientComponentPaths(
+          normalizeScanDirs(srcDir, Object.values(resolvedAlias)),
+          moduleAnalysisCache,
+        )
 
         const allClientComponents = new Set([
-          ...clientComponents,
+          ...getKnownClientComponentPaths(),
           ...scannedClientComponents,
         ])
 
@@ -1810,8 +1846,7 @@ const ${componentName} = registerClientReference(
 
         const clientComponentsArray = [...allClientComponents].filter((componentPath) => {
           try {
-            const code = fs.readFileSync(componentPath, 'utf-8')
-            return hasTopLevelUseClientDirective(code)
+            return moduleAnalysisCache.get(componentPath).topLevelUseClient
           }
           catch {
             return false
@@ -1826,13 +1861,17 @@ const ${componentName} = registerClientReference(
           let hasNamedExport = false
           let namedExportName = ''
           try {
-            const code = fs.readFileSync(componentPath, 'utf-8')
-            const hasDefault = hasDefaultExport(code)
-            const namedExportMatch = code.match(EXPORT_NAMED_DECLARATION_REGEX)
+            const analysis = moduleAnalysisCache.get(componentPath)
+            const hasDefault = analysis.hasDefaultExport
 
-            if (!hasDefault && namedExportMatch) {
-              hasNamedExport = true
-              namedExportName = namedExportMatch[1]
+            if (!hasDefault) {
+              const code = moduleAnalysisCache.getSource(componentPath)
+              const namedExportMatch = code.match(EXPORT_NAMED_DECLARATION_REGEX)
+
+              if (namedExportMatch) {
+                hasNamedExport = true
+                namedExportName = namedExportMatch[1]
+              }
             }
           }
           catch (err) {
@@ -1841,7 +1880,8 @@ const ${componentName} = registerClientReference(
             }
           }
 
-          const componentName = hasNamedExport ? namedExportName : path.basename(componentPath, path.extname(componentPath))
+          const exportName = hasNamedExport ? namedExportName : 'default'
+          const displayName = hasNamedExport ? namedExportName : path.basename(componentPath, path.extname(componentPath))
 
           const normalizedPath = registrationPath.replace(BACKSLASH_REGEX, '/')
           const importPath = normalizedPath.startsWith('/') || WINDOWS_PATH_REGEX.test(normalizedPath)
@@ -1852,7 +1892,8 @@ const ${componentName} = registerClientReference(
           return `  "${registrationPath}": {
     id: "${componentId}",
     path: "${registrationPath}",
-    exportName: "${componentName}",
+    exportName: "${exportName}",
+    displayName: "${displayName}",
     type: "client",
     loader: () => ${importStatement},
     component: null,
@@ -1905,7 +1946,7 @@ for (const [path, config] of Object.entries(lazyComponentRegistry)) {
       }
 
       if (id === 'react-server-dom-rari/server')
-        return await loadReactServerDomShim()
+        return await loadRscReferences()
 
       if (id === 'virtual:app-router-provider.tsx') {
         const runtimeFile = resolveRuntimeDistFile('AppRouterProvider.mjs')
@@ -2014,10 +2055,20 @@ export const createFromReadableStream = module.exports.createFromReadableStream;
     },
 
     async handleHotUpdate({ file, server }) {
+      clearFileResolverCache()
+
+      if (file.endsWith('.mdx'))
+        invalidateMdxRegistryModuleCache()
+
       const isReactFile = TSX_EXT_REGEX.test(file)
 
       if (!isReactFile)
         return undefined
+
+      deleteComponentType(file)
+      removeTrackedClientComponent(file)
+      moduleAnalysisCache.invalidate(file)
+      invalidateMdxRegistryModuleCache()
 
       if (file.includes('/dist/') || file.includes('\\dist\\'))
         return []
@@ -2118,6 +2169,8 @@ export const createFromReadableStream = module.exports.createFromReadableStream;
     cacheControl: options.cacheControl,
     cache: options.cache,
     experimental: options.experimental,
+    moduleAnalysisCache,
+    mdx: options.mdx,
   })
 
   const webpackRequirePatchPlugin: Plugin = {
@@ -2156,16 +2209,98 @@ export const createFromReadableStream = module.exports.createFromReadableStream;
   if (options.router !== false)
     plugins.push(rariRouter(options.router || {}))
 
-  return plugins
+  return toRariPlugins(plugins)
 }
 
 export function defineRariConfig(
-  config: UserConfig & { plugins?: Plugin[] },
+  config: UserConfig & { plugins?: RariPlugin[] },
 ): UserConfig {
   return {
-    plugins: [rari(), ...(config.plugins || [])],
     ...config,
+    plugins: [rari(), ...(config.plugins || [])],
   }
 }
 
+export type {} from '../ambient'
+
+export type Request = globalThis.Request
+export type Response = globalThis.Response
+
+export type {
+  CookieOptions,
+  ProxyConfig,
+  ProxyFunction,
+  ProxyMatcher,
+  ProxyModule,
+  ProxyResult,
+  RariFetchEvent,
+  RariURL,
+  RequestCookies,
+  ResponseCookies,
+} from '../proxy/types'
 export { rariProxy } from '../proxy/vite-plugin'
+
+export type { ProxyPluginOptions } from '../proxy/vite-plugin'
+
+export type {
+  ApiRouteHandlers,
+  RouteContext,
+  RouteHandler,
+} from '../router/api-routes'
+
+export { ApiResponse } from '../router/api-routes'
+
+export type { Robots, RobotsRule, Sitemap, SitemapEntry, SitemapImage, SitemapVideo } from '../router/metadata-route'
+
+export {
+  clearPropsCache,
+  clearPropsCacheForComponent,
+  extractMetadata,
+  extractServerProps,
+  extractServerPropsWithCache,
+  extractStaticParams,
+  hasServerSideDataFetching,
+} from '../router/props-extractor'
+
+export type {
+  MetadataResult,
+  ServerSidePropsResult,
+  StaticParamsResult,
+} from '../router/props-extractor'
+
+export {
+  generateAppRouteManifest,
+} from '../router/routes'
+
+export type {
+  AppRouteEntry,
+  AppRouteManifest,
+  AppRouteMatch,
+  ErrorEntry,
+  ErrorProps,
+  GenerateMetadata,
+  GenerateStaticParams,
+  LayoutEntry,
+  LayoutProps,
+  LoadingEntry,
+  NotFoundEntry,
+  PageProps,
+  RouteSegment,
+  RouteSegmentType,
+  TemplateEntry,
+} from '../router/types'
+
+export type { Metadata } from '../router/types'
+
+export { rariRouter } from '../router/vite-plugin'
+
+export type { RariPlugin } from './plugin-types'
+
+export type {
+  ServerCacheConfig,
+  ServerCacheControlConfig,
+  ServerCacheLayerConfig,
+  ServerConfig,
+  ServerCSPConfig,
+  ServerUseCacheConfig,
+} from './server-config'

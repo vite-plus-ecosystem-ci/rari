@@ -24,6 +24,12 @@ pub const ENV_INJECTION_SCRIPT: &str = r"
 })();
 ";
 
+pub const NODE_BOOTSTRAP_SCRIPT: &str = r"
+(() => {
+    globalThis.Deno.core.createLazyLoader('ext:init_runtime/init_node_bootstrap.ts')();
+})();
+";
+
 pub const MODULE_CHECK_SCRIPT: &str = r"
 (function() {
     if (!globalThis.RscModuleManager) {

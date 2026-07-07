@@ -27,6 +27,7 @@
   "devDependencies": {
     "@rari/logger": "workspace:*",
     "@types/node": "catalog:typescript",
+    "vite": "catalog:build",
     "vite-plus": "catalog:build"
   }
 }

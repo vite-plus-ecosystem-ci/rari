@@ -1,33 +1,34 @@
-use std::{env, fs, path::PathBuf};
-
-use axum::{body::HttpBody, routing};
-use tokio::sync::Mutex;
-
 pub mod types;
 pub mod utils;
 
 use std::{
+    env,
     net::SocketAddr,
+    path::PathBuf,
     sync::{Arc, atomic::AtomicU64},
     time::Instant,
 };
 
 use axum::{
     Router,
+    body::HttpBody,
     extract::DefaultBodyLimit,
     middleware::{self},
-    routing::{any, get, post},
+    routing,
 };
 use colored::Colorize;
 use dashmap::DashMap;
 use rari_error::RariError;
 use rustc_hash::FxHashMap;
-use tokio::{net::TcpListener, sync::RwLock};
+use tokio::{
+    fs,
+    net::TcpListener,
+    sync::{Mutex, RwLock},
+};
 use tower_http::{
     compression::{CompressionLayer, Predicate},
     services::ServeDir,
 };
-use tracing::{debug, error};
 use types::ServerState;
 
 use crate::{
@@ -35,33 +36,36 @@ use crate::{
     rendering::{base::ResourceLimits, layout::LayoutRenderer},
     runtime::JsExecutionRuntime,
     server::{
-        cache::{handler::CacheHandlerRegistry, response, warmup},
+        actions::{handle_form_action, handle_server_action},
+        cache::{
+            handler::CacheHandlerRegistry, loader::CacheLoader, response,
+            revalidate::revalidate_by_path, warmup,
+        },
         config::{
             CACHE_LAYER_IMAGE, CACHE_LAYER_LAYOUT, CACHE_LAYER_OG, CACHE_LAYER_RESPONSE, Config,
         },
-        handlers::{
-            actions::{handle_form_action, handle_server_action},
-            api::{api_cors_preflight, handle_api_route},
-            app::handle_app_route,
-            hmr::handle_hmr_action,
-            og::{og_image_handler, og_image_handler_root},
-            revalidate::revalidate_by_path,
-            route_info::get_route_info,
-            rsc::{health_check, register_client_component, register_component},
-            r#static::{
-                cors_preflight_ok, root_handler, serve_static_asset, static_or_spa_handler,
-            },
-        },
         image::{ImageCache, ImageConfig, ImageOptimizer, ImageState, handle_image_request},
-        loaders::{cache::CacheLoader, component::ComponentLoader},
+        loader::ComponentLoader,
         middleware::{
             proxy::{self, ProxyLayer},
             request::{cors_middleware, security_headers_middleware},
         },
-        og::{OgImageCache, OgImageGenerator},
-        routing::{api_routes, app_router},
+        og::{OgImageCache, OgImageGenerator, og_image_handler, og_image_handler_root},
+        routing::{
+            api::{api_cors_preflight, handle_api_route},
+            api_routes,
+            app::handle_app_route,
+            app_router,
+            route_info::get_route_info,
+        },
+        static_assets::{
+            cors_preflight_ok, root_handler, serve_static_asset, static_or_spa_handler,
+        },
         vite::{
-            check_vite_server_health, vite_reverse_proxy, vite_src_proxy, vite_websocket_proxy,
+            check_vite_server_health,
+            hmr::handle_hmr_action,
+            rsc::{health_check, register_client_component, register_component},
+            vite_reverse_proxy, vite_src_proxy, vite_websocket_proxy,
         },
     },
 };
@@ -230,14 +234,14 @@ impl Server {
         let mut config = config;
         let config_path = "dist/server/image.json";
 
-        if let Ok(image_config_str) = fs::read_to_string(config_path)
+        if let Ok(image_config_str) = fs::read_to_string(config_path).await
             && let Ok(image_config) = serde_json::from_str::<ImageConfig>(&image_config_str)
         {
             config.images = image_config;
         }
 
         if let Err(e) = proxy::initialize_proxy(&state).await {
-            error!("Failed to initialize proxy: {}", e);
+            tracing::error!("Failed to initialize proxy: {}", e);
         }
 
         let router = Self::build_router(&config, state.clone()).await?;
@@ -275,27 +279,28 @@ impl Server {
         let image_state = ImageState { optimizer: image_optimizer };
 
         let revalidation_router = Router::new()
-            .route("/_rari/revalidate", post(revalidate_by_path))
+            .route("/_rari/revalidate", routing::post(revalidate_by_path))
             .layer(small_body_limit);
 
         let mut router = Router::new()
-            .route("/_rari/health", get(health_check))
+            .route("/_rari/health", routing::get(health_check))
             .layer(medium_body_limit)
-            .route("/_rari/route-info", post(get_route_info))
+            .route("/_rari/route-info", routing::post(get_route_info))
             .layer(small_body_limit)
-            .route("/_rari/action", post(handle_server_action))
-            .route("/_rari/form-action", post(handle_form_action))
+            .route("/_rari/action", routing::post(handle_server_action))
+            .route("/_rari/form-action", routing::post(handle_form_action))
             .layer(medium_body_limit)
             .merge(revalidation_router);
 
-        let image_router =
-            Router::new().route("/_rari/image", get(handle_image_request)).with_state(image_state);
+        let image_router = Router::new()
+            .route("/_rari/image", routing::get(handle_image_request))
+            .with_state(image_state);
 
         router = router.merge(image_router);
 
         let og_router = Router::new()
-            .route("/_rari/og/", get(og_image_handler_root))
-            .route("/_rari/og/{*path}", get(og_image_handler))
+            .route("/_rari/og/", routing::get(og_image_handler_root))
+            .route("/_rari/og/{*path}", routing::get(og_image_handler))
             .with_state(state.clone());
 
         router = router.merge(og_router);
@@ -305,19 +310,19 @@ impl Server {
             let large_body_limit = DefaultBodyLimit::max(50 * 1024 * 1024);
 
             router = router
-                .route("/_rari/register", post(register_component))
-                .route("/_rari/register-client", post(register_client_component))
+                .route("/_rari/register", routing::post(register_component))
+                .route("/_rari/register-client", routing::post(register_client_component))
                 .layer(large_body_limit)
-                .route("/_rari/hmr", post(handle_hmr_action))
+                .route("/_rari/hmr", routing::post(handle_hmr_action))
                 .route("/_rari/hmr", routing::options(cors_preflight_ok))
                 .layer(medium_body_limit)
-                .route("/vite-server", get(vite_websocket_proxy))
-                .route("/vite-server/", get(vite_websocket_proxy))
-                .route("/vite-server/{*path}", any(vite_reverse_proxy))
-                .route("/src/{*path}", any(vite_src_proxy));
+                .route("/vite-server", routing::get(vite_websocket_proxy))
+                .route("/vite-server/", routing::get(vite_websocket_proxy))
+                .route("/vite-server/{*path}", routing::any(vite_reverse_proxy))
+                .route("/src/{*path}", routing::any(vite_src_proxy));
 
             if let Err(e) = check_vite_server_health().await {
-                debug!("Vite server not yet available: {}", e);
+                tracing::debug!("Vite server not yet available: {}", e);
             }
         }
 
@@ -327,23 +332,24 @@ impl Server {
             let medium_body_limit = DefaultBodyLimit::max(1024 * 1024);
             router = router
                 .route("/api/{*path}", routing::options(api_cors_preflight))
-                .route("/api/{*path}", any(handle_api_route))
+                .route("/api/{*path}", routing::any(handle_api_route))
                 .layer(medium_body_limit);
         }
 
         if has_app_router {
             if config.is_production() {
-                router = router.route("/assets/{*path}", get(serve_static_asset));
+                router = router.route("/assets/{*path}", routing::get(serve_static_asset));
             }
 
             router = router
-                .route("/", get(handle_app_route))
+                .route("/", routing::get(handle_app_route))
                 .route("/", routing::options(cors_preflight_ok))
-                .route("/{*path}", get(handle_app_route))
+                .route("/{*path}", routing::get(handle_app_route))
                 .route("/{*path}", routing::options(cors_preflight_ok));
         } else if config.is_production() {
-            router =
-                router.route("/", get(root_handler)).route("/{*path}", get(static_or_spa_handler));
+            router = router
+                .route("/", routing::get(root_handler))
+                .route("/{*path}", routing::get(static_or_spa_handler));
         } else {
             let static_service =
                 ServeDir::new(config.public_dir()).append_index_html_on_directories(true);

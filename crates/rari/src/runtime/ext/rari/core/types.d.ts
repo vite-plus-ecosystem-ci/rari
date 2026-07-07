@@ -101,37 +101,8 @@ declare global {
       apiHandler?: {
         callHandler: (requestData: any, moduleSpecifier: string, methodName: string) => Promise<any>
       }
-      lazy?: {
-        pending: Map<string, {
-          isDeferred?: boolean
-          component?: (props: unknown) => Promise<unknown>
-          props?: unknown
-          promise?: Promise<unknown>
-        }>
-        resolved: Map<string, {
-          success: boolean
-          data?: unknown
-          error?: string
-          stack?: string
-        } | Promise<{
-          success: boolean
-          data?: unknown
-          error?: string
-          stack?: string
-        }>>
-        counter: number
-        clear: (promiseId?: string) => void
-        resolve: (promiseId: string) => Promise<{
-          success: boolean
-          data?: unknown
-          error?: string
-          stack?: string
-        }>
-      }
       readStream?: (stream: ReadableStream) => Promise<string>
       ssrModules?: Record<string, { default?: unknown, [key: string]: unknown }>
-      ssrRenderComponent?: (modulePath: string, exportName: string, props: unknown) => Promise<string>
-      renderWireToHtml?: (wireFormat: string) => Promise<string>
       clientReferenceManifest?: Record<string, { id: string, chunks: string, name: string }>
       lastRscBinary?: Uint8Array
       capturedElement?: unknown
@@ -143,6 +114,23 @@ declare global {
         registerComponent: (moduleSpecifier: string, componentId: string, skipGlobalBinding?: boolean) => Promise<unknown>
       }
       cookies?: (req: Request) => unknown
+      renderStreamingDocument?: (options: {
+        capturedElement: unknown
+        headContent: string
+        caughtErrors: unknown[]
+      }) => Promise<void>
+      renderStaticDocument?: (options: {
+        capturedElement: unknown
+        headContent: string
+        caughtErrors: unknown[]
+      }) => Promise<string>
+      pumpStreamingCompleteScript?: () => Promise<void>
+      injectStreamError?: (caughtErrors: unknown[]) => Promise<void>
+      pumpFizzChunk?: (text: string) => Promise<boolean>
+      pumpRscElementStream?: (element: unknown, pumpChunk: (text: string) => Promise<boolean>) => Promise<void>
+      streaming?: { complete?: boolean }
+      loadFullReactVendors?: () => boolean
+      loadRscReactVendors?: () => boolean
     }
   }
 
@@ -167,10 +155,6 @@ declare global {
         function op_cache_get(key: string): any
         function op_cache_set(key: string, value: any): void
       }
-    }
-
-    const env: {
-      get: (key: string) => string | undefined
     }
   }
 }

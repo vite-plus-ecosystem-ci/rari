@@ -1,13 +1,15 @@
 use std::path::PathBuf;
 
-use deno_core::{Extension, extension};
-use deno_kv::{
+use ::deno_kv::{
+    KvConfig as DenoKvConfig, KvConfigBuilder,
     dynamic::MultiBackendDbHandler,
     remote::{HttpOptions, RemoteDbHandler},
     sqlite::SqliteDbHandler,
 };
+use deno_core::{Extension, ExtensionArguments, extension};
+use deno_kv::deno_kv;
 
-use super::ExtensionTrait;
+use super::{ExtensionTrait, lazy};
 
 extension!(
     init_kv,
@@ -15,19 +17,35 @@ extension!(
     esm_entry_point = "ext:init_kv/init_kv.ts",
     esm = [ dir "src/runtime/ext/kv", "init_kv.ts" ],
 );
+
 impl ExtensionTrait<()> for init_kv {
     fn init((): ()) -> Extension {
         Self::init()
     }
 }
-impl ExtensionTrait<KvStore> for deno_kv::deno_kv {
+
+impl ExtensionTrait<KvStore> for deno_kv {
+    const LAZY_INIT: bool = true;
+
     fn init(store: KvStore) -> Extension {
         Self::init(Box::new(store.handler()), store.config())
     }
+
+    fn lazy_init() -> Extension {
+        Self::lazy_init()
+    }
+
+    fn lazy_args(store: KvStore) -> ExtensionArguments {
+        Self::args(Box::new(store.handler()), store.config())
+    }
 }
 
-pub fn extensions(store: KvStore, is_snapshot: bool) -> Vec<Extension> {
-    vec![deno_kv::deno_kv::build(store, is_snapshot), init_kv::build((), is_snapshot)]
+pub fn extensions(store: KvStore, is_snapshot: bool) -> (Vec<Extension>, Vec<ExtensionArguments>) {
+    let mut extensions = Vec::new();
+    let mut lazy_args = Vec::new();
+    lazy::register::<KvStore, deno_kv>(store, is_snapshot, &mut extensions, &mut lazy_args);
+    lazy::register::<(), init_kv>((), is_snapshot, &mut extensions, &mut lazy_args);
+    (extensions, lazy_args)
 }
 
 #[derive(Clone)]
@@ -49,9 +67,10 @@ pub struct KvConfig {
     pub max_total_mutation_size_bytes: usize,
     pub max_total_key_size_bytes: usize,
 }
-impl From<KvConfig> for deno_kv::KvConfig {
+
+impl From<KvConfig> for DenoKvConfig {
     fn from(value: KvConfig) -> Self {
-        deno_kv::KvConfigBuilder::default()
+        KvConfigBuilder::default()
             .max_write_key_size_bytes(value.max_write_key_size_bytes)
             .max_value_size_bytes(value.max_value_size_bytes)
             .max_read_ranges(value.max_read_ranges)
@@ -64,6 +83,7 @@ impl From<KvConfig> for deno_kv::KvConfig {
             .build()
     }
 }
+
 impl Default for KvConfig {
     fn default() -> Self {
         const MAX_WRITE_KEY_SIZE_BYTES: usize = 2048;
@@ -115,10 +135,11 @@ impl KvStore {
         }
     }
 
-    pub fn config(&self) -> deno_kv::KvConfig {
+    pub fn config(&self) -> DenoKvConfig {
         self.1.into()
     }
 }
+
 impl Default for KvStore {
     fn default() -> Self {
         Self::new_local(None, None, KvConfig::default())

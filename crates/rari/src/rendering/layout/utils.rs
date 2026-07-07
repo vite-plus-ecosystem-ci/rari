@@ -4,10 +4,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use bytes::Bytes;
 use cow_utils::CowUtils;
 use rari_error::RariError;
 use rustc_hash::FxHashMap;
 use serde_json::Value;
+use tokio::sync::mpsc::Receiver;
 
 use super::LayoutRenderContext;
 use crate::server::{
@@ -146,4 +148,84 @@ pub fn create_layout_context(
     pathname: String,
 ) -> LayoutRenderContext {
     LayoutRenderContext { params, search_params, headers, pathname, metadata: None }
+}
+
+pub async fn drain_chunked_stream(
+    shell: Bytes,
+    closing: Bytes,
+    chunks: &mut Receiver<Result<Vec<u8>, String>>,
+) -> Result<String, String> {
+    let mut output = String::from_utf8_lossy(&shell).into_owned();
+
+    while let Some(chunk_result) = chunks.recv().await {
+        match chunk_result {
+            Ok(data) => output.push_str(&String::from_utf8_lossy(&data)),
+            Err(error) => return Err(error),
+        }
+    }
+
+    output.push_str(&String::from_utf8_lossy(&closing));
+    Ok(output)
+}
+
+pub fn sort_flight_protocol(flight_protocol: &str) -> String {
+    let mut rows_with_ids: Vec<(u32, String)> = Vec::new();
+
+    for row in flight_protocol.lines() {
+        if let Some(colon_pos) = row.find(':') {
+            if let Ok(row_id) = u32::from_str_radix(&row[..colon_pos], 16) {
+                rows_with_ids.push((row_id, row.to_string()));
+            } else {
+                rows_with_ids.push((u32::MAX, row.to_string()));
+            }
+        } else {
+            rows_with_ids.push((u32::MAX, row.to_string()));
+        }
+    }
+
+    rows_with_ids.sort_by_key(|(id, _)| *id);
+
+    let mut sorted =
+        rows_with_ids.iter().map(|(_, row)| row.as_str()).collect::<Vec<_>>().join("\n");
+
+    if !sorted.is_empty() && !sorted.ends_with('\n') {
+        sorted.push('\n');
+    }
+
+    let has_row_0 = rows_with_ids.iter().any(|(id, row)| *id == 0 && row.starts_with("0:"));
+
+    if !has_row_0
+        && let Some((max_id, _)) =
+            rows_with_ids.iter().filter(|(id, _)| *id != u32::MAX).max_by_key(|(id, _)| *id)
+        && *max_id > 0
+    {
+        let row_0 = format!("0:\"${max_id:x}\"\n");
+        sorted.insert_str(0, &row_0);
+    }
+
+    sorted
+}
+
+#[cfg(test)]
+mod flight_tests {
+    use super::sort_flight_protocol;
+
+    #[test]
+    fn test_sort_flight_protocol_orders_rows() {
+        let input = "2:\"b\"\n1:\"a\"\n3:\"c\"";
+        let sorted = sort_flight_protocol(input);
+        assert_eq!(sorted, "0:\"$3\"\n1:\"a\"\n2:\"b\"\n3:\"c\"\n");
+    }
+
+    #[test]
+    fn test_sort_flight_protocol_preserves_existing_row_0() {
+        let input = "2:\"b\"\n0:\"$2\"\n1:\"a\"";
+        let sorted = sort_flight_protocol(input);
+        assert_eq!(sorted, "0:\"$2\"\n1:\"a\"\n2:\"b\"\n");
+    }
+
+    #[test]
+    fn test_sort_flight_protocol_empty() {
+        assert_eq!(sort_flight_protocol(""), "");
+    }
 }

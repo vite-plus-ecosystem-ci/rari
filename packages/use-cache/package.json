@@ -34,11 +34,6 @@
       "types": "./dist/runtime/cache-wrapper.d.mts",
       "import": "./dist/runtime/cache-wrapper.mjs",
       "default": "./dist/runtime/cache-wrapper.mjs"
-    },
-    "./runtime/deterministic-stringify": {
-      "types": "./dist/runtime/deterministic-stringify.d.mts",
-      "import": "./dist/runtime/deterministic-stringify.mjs",
-      "default": "./dist/runtime/deterministic-stringify.mjs"
     }
   },
   "main": "./dist/index.mjs",
@@ -53,7 +48,7 @@
     "node": ">=22.18.0"
   },
   "scripts": {
-    "build": "pnpm --silent clean && pnpm typecheck && vp pack",
+    "build": "pnpm typecheck && vp pack",
     "clean": "node --eval \"import('node:fs').then(fs => fs.rmSync('dist', { recursive: true, force: true }))\"",
     "lint": "vp lint",
     "lint:fix": "vp lint --fix",
@@ -72,6 +67,7 @@
   },
   "devDependencies": {
     "@types/node": "catalog:typescript",
+    "vite": "catalog:build",
     "vite-plus": "catalog:build"
   }
 }

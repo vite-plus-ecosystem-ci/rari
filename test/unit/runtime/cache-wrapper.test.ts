@@ -1,41 +1,18 @@
+import type { MockBackend } from './deno-mock'
 import { Buffer } from 'node:buffer'
 import { deserialize } from 'node:v8'
+import { REDB_CACHE_OPS } from '@rari/use-cache/runtime/cache-storage-redb'
+import { REDIS_CACHE_OPS } from '@rari/use-cache/runtime/cache-storage-redis'
 import { $$cache__, encodeBoundArgs } from '@rari/use-cache/runtime/cache-wrapper'
-import { describe, expect, it } from 'vite-plus/test'
+import { afterEach, describe, expect, it } from 'vite-plus/test'
+import { patchDenoBackend, patchDenoOps, restoreDeno } from './deno-mock'
 
-interface RemoteCacheOps {
-  op_cache_remote_get: (key: string) => Promise<string | null>
-  op_cache_remote_set: (key: string, value: string, ttlMs: number) => Promise<void>
-}
-
-interface DenoLike {
-  core: {
-    ops: RemoteCacheOps
-  }
-}
-
-interface MockBackend {
-  read: (key: string) => string | null
-  write: (key: string, value: string, ttlMs: number) => void
-}
-
-function installOpsMock(backend: MockBackend) {
-  (globalThis as { Deno?: DenoLike }).Deno = {
-    core: {
-      ops: {
-        async op_cache_remote_get(key: string) {
-          return backend.read(key)
-        },
-        async op_cache_remote_set(key: string, value: string, ttlMs: number) {
-          backend.write(key, value, ttlMs)
-        },
-      },
-    },
-  }
+function installOpsMock(backend: MockBackend, remoteHandler: 'redis' | 'redb' | 'test' = 'redis') {
+  patchDenoBackend(REDIS_CACHE_OPS, backend, { remoteHandler })
 }
 
 function uninstallOpsMock(): void {
-  delete (globalThis as { Deno?: DenoLike }).Deno
+  restoreDeno()
 }
 
 const CACHE_LIMIT = 1000
@@ -199,6 +176,44 @@ describe('$$cache__', () => {
     const second = await callCache('remote', 'remote-fallback-no-ops', 1, fn, [5])
     expect(second).toBe(6)
     expect(calls).toBe(1)
+  })
+
+  it('falls back to memory storage when remote ops exist but handler is not configured', async () => {
+    let redbGetCalls = 0
+    let redbSetCalls = 0
+    let redisGetCalls = 0
+    let redisSetCalls = 0
+
+    patchDenoOps({
+      [REDB_CACHE_OPS.get]: async () => {
+        redbGetCalls++
+        return null
+      },
+      [REDB_CACHE_OPS.set]: async () => {
+        redbSetCalls++
+      },
+      [REDIS_CACHE_OPS.get]: async () => {
+        redisGetCalls++
+        return null
+      },
+      [REDIS_CACHE_OPS.set]: async () => {
+        redisSetCalls++
+      },
+    })
+
+    let calls = 0
+    const fn = (a: number) => {
+      calls++
+      return a + 1
+    }
+
+    await callCache('remote', 'remote-fallback-unconfigured', 1, fn, [5])
+    await callCache('remote', 'remote-fallback-unconfigured', 1, fn, [5])
+    expect(calls).toBe(1)
+    expect(redbGetCalls).toBe(0)
+    expect(redbSetCalls).toBe(0)
+    expect(redisGetCalls).toBe(0)
+    expect(redisSetCalls).toBe(0)
   })
 
   it('reads from mock backend on cache hit', async () => {

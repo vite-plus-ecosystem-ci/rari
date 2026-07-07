@@ -10,16 +10,21 @@ use axum::http::HeaderMap;
 use futures::stream::{self, StreamExt};
 use rustc_hash::FxHashMap;
 use tokio::sync::{Mutex, OnceCell};
-use tracing::{error, info};
 
 use crate::{
-    rendering::layout::{LayoutRenderContext, LayoutRenderer, types::RenderResult},
+    rendering::layout::{
+        ChunkedContentType, LayoutRenderContext, LayoutRenderer, drain_chunked_stream,
+        types::RenderResult,
+    },
     server::{
         ServerState,
         cache::response,
-        handlers::app::{collect_page_metadata, wrap_html_with_metadata},
         middleware::request_context::RequestContext,
-        routing::{AppRouteMatch, AppRouter, types::ParamValue},
+        routing::{
+            AppRouteMatch, AppRouter,
+            app::{collect_page_metadata, wrap_html_with_metadata},
+            types::ParamValue,
+        },
     },
 };
 
@@ -37,18 +42,18 @@ async fn warmup_render_lock() -> &'static Mutex<()> {
 
 pub async fn warm_cache(state: &ServerState) {
     let Some(app_router) = &state.app_router else {
-        info!("[rari] Cache warmup: No app router available, skipping");
+        tracing::info!("[rari] Cache warmup: No app router available, skipping");
         return;
     };
 
     let paths = app_router.warmup_paths();
 
     if paths.is_empty() {
-        info!("[rari] Cache warmup: No routes to warm");
+        tracing::info!("[rari] Cache warmup: No routes to warm");
         return;
     }
 
-    info!("[rari] Cache warmup: Pre-rendering {} routes...", paths.len());
+    tracing::info!("[rari] Cache warmup: Pre-rendering {} routes...", paths.len());
     let start = Instant::now();
 
     let success_count = Arc::new(AtomicUsize::new(0));
@@ -64,7 +69,7 @@ pub async fn warm_cache(state: &ServerState) {
                         success_count.fetch_add(1, Ordering::Relaxed);
                     }
                     Err(e) => {
-                        error!("[rari] Cache warmup: Failed to warm '{}': {}", path, e);
+                        tracing::error!("[rari] Cache warmup: Failed to warm '{}': {}", path, e);
                         error_count.fetch_add(1, Ordering::Relaxed);
                     }
                 }
@@ -73,7 +78,7 @@ pub async fn warm_cache(state: &ServerState) {
         .await;
 
     let elapsed = start.elapsed();
-    info!(
+    tracing::info!(
         "[rari] Cache warmup: Completed in {:.1}ms ({} succeeded, {} failed)",
         elapsed.as_secs_f64() * 1000.0,
         success_count.load(Ordering::Relaxed),
@@ -119,17 +124,18 @@ async fn warm_route(
 
     let html = match render_result {
         RenderResult::Static(html) => html,
-        RenderResult::FizzHtmlStream { shell, closing, mut chunks } => {
-            let mut html = String::from_utf8_lossy(&shell).into_owned();
-            while let Some(chunk_result) = chunks.recv().await {
-                match chunk_result {
-                    Ok(data) => html.push_str(&String::from_utf8_lossy(&data)),
-                    Err(_) => break,
-                }
+        RenderResult::Chunked {
+            content_type: ChunkedContentType::Html,
+            shell,
+            closing,
+            mut chunks,
+        } => match drain_chunked_stream(shell, closing, &mut chunks).await {
+            Ok(html) => html,
+            Err(error) => {
+                tracing::warn!("Skipping cache warmup for {path}: chunked stream failed: {error}");
+                return Ok(());
             }
-            html.push_str(&String::from_utf8_lossy(&closing));
-            html
-        }
+        },
         _ => return Ok(()),
     };
 

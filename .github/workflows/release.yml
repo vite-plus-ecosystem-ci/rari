@@ -13,6 +13,9 @@ on:
 permissions:
   contents: write
 
+env:
+  NODE_VERSION: 22.18.0
+
 jobs:
   build-snapshot:
     name: Build V8 snapshot
@@ -21,21 +24,24 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        if: runner.os == 'Windows'
+
+      - uses: namespacelabs/nscloud-checkout-action@445c25d7009680597d73eb03c4e1cd5be522ed73 # v9.0.0
+        if: runner.os != 'Windows'
+
+      - uses: ./.github/actions/setup-namespace-cache
+        with:
+          cache: |
+            rust
+            pnpm
+            apt
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
           toolchain: nightly
 
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y pkg-config libfontconfig1-dev mold
-
-      - name: Cache Rust
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-        with:
-          shared-key: release-snapshot-linux
+      - uses: ./.github/actions/setup-rust-build-deps
 
       - name: Bundle React ESM vendor files
         uses: ./.github/actions/bundle-react-esm
@@ -53,7 +59,7 @@ jobs:
           RUSTFLAGS: -C link-arg=-fuse-ld=mold
 
       - name: Upload snapshot
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: namespace-actions/upload-artifact@f6ccaacc655aec41b93af180d1d7eef21af862d2 # v1.0.3
         with:
           name: v8-snapshot
           path: |
@@ -100,6 +106,23 @@ jobs:
 
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        if: runner.os == 'Windows'
+
+      - uses: namespacelabs/nscloud-checkout-action@445c25d7009680597d73eb03c4e1cd5be522ed73 # v9.0.0
+        if: runner.os != 'Windows'
+
+      - uses: ./.github/actions/setup-platform-cache
+        with:
+          linux-cache: |
+            rust
+            pnpm
+            apt
+          macos-cache: |
+            rust
+            pnpm
+            brew
+          rust: 'true'
+          pnpm: 'true'
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
@@ -107,33 +130,15 @@ jobs:
           toolchain: nightly
           targets: ${{ matrix.target }}
 
-      - name: Install system dependencies (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y pkg-config libfontconfig1-dev mold
-
-      - name: Install system dependencies (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          brew list pkg-config &>/dev/null || brew install pkg-config
-          brew list fontconfig &>/dev/null || brew install fontconfig
-
-      - name: Install system dependencies (Windows)
-        if: runner.os == 'Windows'
-        run: vcpkg install fontconfig:${{ matrix.vcpkg_triplet }}
-        shell: pwsh
-
-      - name: Cache Rust
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: ./.github/actions/setup-rust-build-deps
         with:
-          shared-key: release-binary-${{ matrix.target }}
+          vcpkg-triplet: ${{ matrix.vcpkg_triplet }}
 
       - name: Bundle React ESM vendor files
         uses: ./.github/actions/bundle-react-esm
 
       - name: Download V8 snapshot
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: namespace-actions/download-artifact@7cbad919e4b0e09f17e9d6311a444ff002992b5b # v2.0.1
         with:
           name: v8-snapshot
           path: crates/rari/snapshots
@@ -173,7 +178,7 @@ jobs:
           copy target\${{ matrix.target }}\release\rari.exe binaries\${{ matrix.name }}
 
       - name: Upload binary
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: namespace-actions/upload-artifact@f6ccaacc655aec41b93af180d1d7eef21af862d2 # v1.0.3
         with:
           name: ${{ matrix.name }}
           path: binaries/${{ matrix.name }}
@@ -206,18 +211,22 @@ jobs:
 
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        if: runner.os == 'Windows'
+
+      - uses: namespacelabs/nscloud-checkout-action@445c25d7009680597d73eb03c4e1cd5be522ed73 # v9.0.0
+        if: runner.os != 'Windows'
 
       - name: Setup Node.js
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
-          node-version: 22.14.0
+          node-version: ${{ env.NODE_VERSION }}
           package-manager-cache: false
 
       - name: Upgrade npm
         run: npm install -g npm@latest
 
       - name: Download platform binary
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: namespace-actions/download-artifact@7cbad919e4b0e09f17e9d6311a444ff002992b5b # v2.0.1
         with:
           name: ${{ matrix.binary }}
           path: platform-binary
@@ -349,13 +358,23 @@ jobs:
           echo "📦 Publishing ${PACKAGE_NAME}@${VERSION}"
 
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        if: runner.os == 'Windows'
         with:
           ref: ${{ github.ref }}
+
+      - uses: namespacelabs/nscloud-checkout-action@445c25d7009680597d73eb03c4e1cd5be522ed73 # v9.0.0
+        if: runner.os != 'Windows'
+        with:
+          ref: ${{ github.ref }}
+
+      - uses: ./.github/actions/setup-namespace-cache
+        with:
+          cache: pnpm
 
       - name: Setup Node.js
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
-          node-version: 22.14.0
+          node-version: ${{ env.NODE_VERSION }}
           package-manager-cache: false
 
       - name: Upgrade npm
@@ -429,6 +448,25 @@ jobs:
 
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        if: runner.os == 'Windows'
+
+      - uses: namespacelabs/nscloud-checkout-action@445c25d7009680597d73eb03c4e1cd5be522ed73 # v9.0.0
+        if: runner.os != 'Windows'
+
+      - uses: ./.github/actions/setup-platform-cache
+        with:
+          linux-cache: |
+            rust
+            pnpm
+            apt
+          macos-cache: |
+            rust
+            pnpm
+            brew
+          rust: 'true'
+          rust-workspaces: crates/rari_use_cache
+          pnpm: 'true'
+          node-version: ${{ env.NODE_VERSION }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
@@ -436,43 +474,20 @@ jobs:
           toolchain: nightly
           targets: ${{ matrix.target }}
 
-      - name: Install system dependencies (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y pkg-config mold
-
-      - name: Install system dependencies (macOS)
-        if: runner.os == 'macOS'
-        run: brew list pkg-config &>/dev/null || brew install pkg-config
-
-      - name: Setup Node.js
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+      - uses: ./.github/actions/setup-rust-build-deps
         with:
-          node-version: 22
+          fontconfig: 'false'
 
-      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
-
-      - name: Cache pnpm store
-        uses: actions/cache@2c8a9bd7457de244a408f35966fab2fb45fda9c8 # v6.0.0
+      - uses: ./.github/actions/setup-pnpm
         with:
-          path: ~/.pnpm-store
-          key: pnpm-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
-          restore-keys: pnpm-${{ runner.os }}-
-
-      - name: Cache Rust
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-        with:
-          shared-key: release-addon-${{ matrix.target }}
-          workspaces: crates/rari-use-cache
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'false'
+          setup-toolchain: 'false'
 
       - name: Build addon (Linux)
         if: runner.os == 'Linux'
         run: |
-          cd crates/rari-use-cache
+          cd crates/rari_use_cache
           pnpm exec napi build --release --strip --platform --target ${{ matrix.target }}
         env:
           RUSTFLAGS: -C link-arg=-fuse-ld=mold
@@ -480,13 +495,13 @@ jobs:
       - name: Build addon (macOS)
         if: runner.os == 'macOS'
         run: |
-          cd crates/rari-use-cache
+          cd crates/rari_use_cache
           pnpm exec napi build --release --strip --platform --target ${{ matrix.target }}
 
       - name: Build addon (Windows)
         if: runner.os == 'Windows'
         run: |
-          cd crates/rari-use-cache
+          cd crates/rari_use_cache
           pnpm exec napi build --release --strip --platform --target ${{ matrix.target }}
         env:
           AWS_LC_SYS_PREBUILT_NASM: 1
@@ -495,11 +510,11 @@ jobs:
         shell: bash
         run: |
           mkdir -p addon-output
-          find crates/rari-use-cache -name "*.node" -exec cp {} addon-output/rari_use_cache.node \;
+          find crates/rari_use_cache -name "*.node" -exec cp {} addon-output/rari_use_cache.node \;
           ls -la addon-output/
 
       - name: Upload addon artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: namespace-actions/upload-artifact@f6ccaacc655aec41b93af180d1d7eef21af862d2 # v1.0.3
         with:
           name: use-cache-addon-${{ matrix.platform }}
           path: addon-output/rari_use_cache.node
@@ -526,18 +541,22 @@ jobs:
 
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        if: runner.os == 'Windows'
+
+      - uses: namespacelabs/nscloud-checkout-action@445c25d7009680597d73eb03c4e1cd5be522ed73 # v9.0.0
+        if: runner.os != 'Windows'
 
       - name: Setup Node.js
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
-          node-version: 22.14.0
+          node-version: ${{ env.NODE_VERSION }}
           package-manager-cache: false
 
       - name: Upgrade npm
         run: npm install -g npm@latest
 
       - name: Download platform addon
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: namespace-actions/download-artifact@7cbad919e4b0e09f17e9d6311a444ff002992b5b # v2.0.1
         with:
           name: use-cache-addon-${{ matrix.platform }}
           path: platform-addon
@@ -631,13 +650,23 @@ jobs:
           echo "📦 Publishing @rari/use-cache@${VERSION}"
 
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        if: runner.os == 'Windows'
         with:
           ref: ${{ github.ref }}
+
+      - uses: namespacelabs/nscloud-checkout-action@445c25d7009680597d73eb03c4e1cd5be522ed73 # v9.0.0
+        if: runner.os != 'Windows'
+        with:
+          ref: ${{ github.ref }}
+
+      - uses: ./.github/actions/setup-namespace-cache
+        with:
+          cache: pnpm
 
       - name: Setup Node.js
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
-          node-version: 22.14.0
+          node-version: ${{ env.NODE_VERSION }}
           package-manager-cache: false
 
       - name: Upgrade npm

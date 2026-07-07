@@ -2,7 +2,7 @@
   "name": "@rari/monorepo",
   "type": "module",
   "private": true,
-  "packageManager": "pnpm@11.8.0",
+  "packageManager": "pnpm@11.10.0",
   "scripts": {
     "build": "pnpm -r run build",
     "typecheck": "pnpm -r run typecheck",
@@ -30,6 +30,8 @@
     "eslint-plugin-oxlint": "catalog:eslint",
     "eslint-plugin-react-refresh": "catalog:eslint",
     "knip": "catalog:eslint",
-    "vite-plus": "catalog:build"
+    "vite": "catalog:build",
+    "vite-plus": "catalog:build",
+    "vitest": "catalog:build"
   }
 }

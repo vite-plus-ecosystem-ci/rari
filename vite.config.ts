@@ -7,9 +7,6 @@ export default defineConfig({
       '@rari/use-cache/runtime/cache-wrapper': fileURLToPath(
         new URL('./packages/use-cache/dist/runtime/cache-wrapper.mjs', import.meta.url),
       ),
-      '@rari/use-cache/runtime/deterministic-stringify': fileURLToPath(
-        new URL('./packages/use-cache/dist/runtime/deterministic-stringify.mjs', import.meta.url),
-      ),
       '@rari/use-cache-darwin-arm64': fileURLToPath(
         new URL('./packages/use-cache-darwin-arm64', import.meta.url),
       ),
@@ -30,6 +27,9 @@ export default defineConfig({
       ),
       '@rari/use-cache': fileURLToPath(
         new URL('./packages/use-cache/src', import.meta.url),
+      ),
+      '@rari/logger': fileURLToPath(
+        new URL('./packages/logger/src', import.meta.url),
       ),
       '@rari': fileURLToPath(new URL('./packages/rari/src', import.meta.url)),
     },
@@ -69,6 +69,10 @@ export default defineConfig({
       '**/dist',
       '**/node_modules',
       'packages/*/bin',
+      'packages/rari-*/',
+      'packages/use-cache-*/',
+      '**/.pnpm-store/',
+      '**/.build',
       '**/.cache',
       '**/coverage',
       '**/test-results',
@@ -480,6 +484,10 @@ export default defineConfig({
               prefer: 'type-imports',
             },
           ],
+          'typescript/method-signature-style': [
+            'error',
+            'property',
+          ],
           'typescript/no-import-type-side-effects': 'error',
         },
         plugins: [
@@ -630,7 +638,11 @@ export default defineConfig({
           'no-undef': 'off',
           'no-unused-vars': 'off',
           'no-use-before-define': 'off',
+          'typescript/ban-ts-comment': 'off',
         },
+        plugins: [
+          'typescript',
+        ],
       },
     ],
     options: {
