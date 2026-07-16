@@ -19,7 +19,7 @@ env:
 permissions: {}
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.number || github.sha }}-v2
+  group: ${{ github.workflow }}-${{ github.event.number || github.sha }}-ecosystem-v3
   cancel-in-progress: ${{ github.event_name != 'push' }}
 
 jobs:
