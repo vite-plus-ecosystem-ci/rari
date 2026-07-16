@@ -1,7 +1,7 @@
 {
   "name": "@rari/use-cache",
   "type": "module",
-  "version": "0.14.12",
+  "version": "0.15.4",
   "description": "Native 'use cache' directive transform addon for rari",
   "author": "Ryan Skinner",
   "license": "MIT",
@@ -35,10 +35,10 @@
       "import": "./dist/runtime/cache-wrapper.mjs",
       "default": "./dist/runtime/cache-wrapper.mjs"
     },
-    "./runtime/deterministic-stringify": {
-      "types": "./dist/runtime/deterministic-stringify.d.mts",
-      "import": "./dist/runtime/deterministic-stringify.mjs",
-      "default": "./dist/runtime/deterministic-stringify.mjs"
+    "./runtime/cache-dynamic-context": {
+      "types": "./dist/runtime/cache-dynamic-context.d.mts",
+      "import": "./dist/runtime/cache-dynamic-context.mjs",
+      "default": "./dist/runtime/cache-dynamic-context.mjs"
     }
   },
   "main": "./dist/index.mjs",
@@ -53,25 +53,28 @@
     "node": ">=22.18.0"
   },
   "scripts": {
-    "build": "pnpm --silent clean && pnpm typecheck && vp pack",
+    "build": "pnpm typecheck && vp pack",
     "clean": "node --eval \"import('node:fs').then(fs => fs.rmSync('dist', { recursive: true, force: true }))\"",
     "lint": "vp lint",
     "lint:fix": "vp lint --fix",
-    "typecheck": "tsgo"
+    "typecheck": "tsc"
   },
-  "dependencies": {
-    "quick-lru": "catalog:runtime"
+  "peerDependencies": {
+    "react-server-dom-webpack": "catalog:react"
   },
   "optionalDependencies": {
-    "@rari/use-cache-darwin-arm64": "workspace:*",
-    "@rari/use-cache-darwin-x64": "workspace:*",
-    "@rari/use-cache-linux-arm64": "workspace:*",
-    "@rari/use-cache-linux-x64": "workspace:*",
-    "@rari/use-cache-win32-arm64": "workspace:*",
-    "@rari/use-cache-win32-x64": "workspace:*"
+    "@rari/use-cache-darwin-arm64": "0.15.4",
+    "@rari/use-cache-darwin-x64": "0.15.4",
+    "@rari/use-cache-linux-arm64": "0.15.4",
+    "@rari/use-cache-linux-x64": "0.15.4",
+    "@rari/use-cache-win32-arm64": "0.15.4",
+    "@rari/use-cache-win32-x64": "0.15.4"
   },
   "devDependencies": {
     "@types/node": "catalog:typescript",
+    "typescript": "catalog:typescript",
+    "typescript-7": "catalog:typescript",
+    "vite": "catalog:build",
     "vite-plus": "catalog:build"
   }
 }

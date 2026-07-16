@@ -15,6 +15,15 @@ export interface ReadonlyCookie {
   value: string
 }
 
+export interface ReadonlyHeaders {
+  get: (name: string) => string | null
+  has: (name: string) => boolean
+  entries: () => IterableIterator<[string, string]>
+  forEach: (callback: (value: string, key: string) => void) => void
+  keys: () => IterableIterator<string>
+  values: () => IterableIterator<string>
+}
+
 export interface CookieStore {
   get: (name: string) => ReadonlyCookie | undefined
   getAll: (name?: string) => ReadonlyCookie[]
@@ -22,12 +31,6 @@ export interface CookieStore {
   set: ((name: string, value: string, options?: CookieOptions) => void) & ((options: { name: string, value: string } & CookieOptions) => void)
   delete: (name: string) => void
   toString: () => string
-}
-
-export interface ModuleData {
-  id: string
-  chunks: string[]
-  name: string
 }
 
 export interface ComponentInfo {
@@ -39,6 +42,7 @@ export interface ComponentInfo {
   loader?: () => Promise<any>
   loading?: boolean
   loadPromise?: Promise<any>
+  loadError?: unknown
 }
 
 export interface GlobalWithRari {
@@ -47,33 +51,24 @@ export interface GlobalWithRari {
     navigationId?: number
     AppRouterProvider?: any
     ClientRouter?: any
-    getClientComponent?: (id: string) => any
+    getClientComponent?: (id: string) => Promise<any>
     preloadClientComponent?: (id: string) => Promise<void>
-    hydrateClientComponents?: (boundaryId: string, content: any, boundaryElement: Element) => void
-    lazy?: {
-      pending: Map<string, any>
-      resolved: Map<string, any>
-      counter: number
-      resolve: (promiseId: string) => Promise<any>
-      clear: (promiseId?: string) => void
-    }
     streaming?: {
       enabled?: boolean
       complete?: boolean
       bufferedRows: string[]
-      bufferedEvents: any[]
       streamingBridgeInstalled?: boolean
     }
-    hmr?: {
-      refreshCounters: Record<string, number>
-    }
-    processBoundaryUpdate?: (boundaryId: string, rscRow: string, rowId: string) => void
-    boundaryModules?: Map<string, ModuleData>
-    pendingBoundaryHydrations?: Map<string, any>
     serverComponents?: Set<string>
-    routeInfoCache?: Map<string, any>
-    bridge?: any
+    routeInfoCache?: { clear: () => void, invalidate?: (path: string) => void }
     cookies?: () => CookieStore
+    headers?: () => ReadonlyHeaders
+    useCacheDynamicDepth?: number
+    useCacheBuildId?: string
+    useCachePrivateKey?: string
+    pageCacheTags?: Set<string>
+    invalidateUseCache?: (input: { tag?: string, path?: string }) => Promise<void>
+    markUseCacheDynamic?: () => void
   }
   '~clientComponents': Record<string, ComponentInfo>
   '~clientComponentPaths': Record<string, string>

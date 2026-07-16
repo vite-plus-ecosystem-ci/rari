@@ -19,7 +19,7 @@ use super::{
     ImageError,
     cache::{self, ImageCache},
     config::{ImageConfig, LocalPattern, RemotePattern},
-    types::{ImageFormat, OptimizeParams, OptimizedImage},
+    types::{DEFAULT_IMAGE_QUALITY, ImageFormat, OptimizeParams, OptimizedImage},
 };
 use crate::utils::{cast, float};
 
@@ -82,10 +82,12 @@ impl ImageOptimizer {
     }
 
     fn default_quality(&self) -> u8 {
-        if self.config.quality_allowlist.is_empty() || self.config.quality_allowlist.contains(&75) {
-            75
+        if self.config.quality_allowlist.is_empty()
+            || self.config.quality_allowlist.contains(&DEFAULT_IMAGE_QUALITY)
+        {
+            DEFAULT_IMAGE_QUALITY
         } else {
-            *self.config.quality_allowlist.first().unwrap_or(&75)
+            *self.config.quality_allowlist.first().unwrap_or(&DEFAULT_IMAGE_QUALITY)
         }
     }
 
@@ -947,10 +949,10 @@ impl ImageOptimizer {
             let public_path = self.project_path.join("public");
             let file_path = public_path.join(url.trim_start_matches('/'));
 
-            let canonical_public = public_path.canonicalize().map_err(|e| {
+            let canonical_public = fs::canonicalize(&public_path).await.map_err(|e| {
                 ImageError::FetchError(format!("Failed to canonicalize public directory: {e}"))
             })?;
-            let canonical_file = file_path.canonicalize().map_err(|e| {
+            let canonical_file = fs::canonicalize(&file_path).await.map_err(|e| {
                 ImageError::FetchError(format!(
                     "Failed to canonicalize file path {}: {}",
                     file_path.display(),

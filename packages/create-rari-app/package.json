@@ -1,7 +1,7 @@
 {
   "name": "create-rari-app",
   "type": "module",
-  "version": "0.5.17",
+  "version": "0.5.18",
   "description": "Create Runtime Accelerated Rendering Infrastructure (rari) applications with no build configuration",
   "author": "Ryan Skinner",
   "license": "MIT",
@@ -40,19 +40,21 @@
     "templates"
   ],
   "scripts": {
-    "build": "pnpm --silent clean && pnpm typecheck && vp pack",
+    "build": "pnpm typecheck && vp pack",
     "dev": "vp pack --watch",
     "clean": "node --eval \"import('node:fs').then(fs => fs.rmSync('dist', { recursive: true, force: true }))\"",
     "lint": "vp lint",
     "lint:fix": "vp lint --fix",
-    "typecheck": "tsgo"
+    "typecheck": "tsc"
   },
   "dependencies": {
     "@clack/prompts": "catalog:cli"
   },
   "devDependencies": {
     "@types/node": "catalog:typescript",
-    "@typescript/native-preview": "catalog:typescript",
+    "typescript": "catalog:typescript",
+    "typescript-7": "catalog:typescript",
+    "vite": "catalog:build",
     "vite-plus": "catalog:build"
   }
 }

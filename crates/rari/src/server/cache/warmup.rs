@@ -8,18 +8,24 @@ use std::{
 
 use axum::http::HeaderMap;
 use futures::stream::{self, StreamExt};
+use rari_error::RariError;
 use rustc_hash::FxHashMap;
 use tokio::sync::{Mutex, OnceCell};
-use tracing::{error, info};
 
 use crate::{
-    rendering::layout::{LayoutRenderContext, LayoutRenderer, types::RenderResult},
+    rendering::layout::{
+        ChunkedContentType, LayoutRenderContext, LayoutRenderer, drain_chunked_stream,
+        types::RenderResult,
+    },
     server::{
         ServerState,
         cache::response,
-        handlers::app::{collect_page_metadata, wrap_html_with_metadata},
         middleware::request_context::RequestContext,
-        routing::{AppRouteMatch, AppRouter, types::ParamValue},
+        routing::{
+            AppRouteMatch, AppRouter,
+            app::{collect_page_metadata, wrap_html_with_metadata},
+            types::ParamValue,
+        },
     },
 };
 
@@ -29,26 +35,40 @@ const WARMUP_CONCURRENCY: usize = 10;
 /// The RSC+Fizz pipeline shares V8 globals between the mutex-protected
 /// RSC render and the non-mutex Fizz render. Without serialization,
 /// concurrent warmup tasks interleave and produce wrong HTML.
-static WARMUP_RENDER_LOCK: OnceCell<Mutex<()>> = OnceCell::const_new();
+///
+/// The guard must cover both the HTML/Fizz render and the follow-up RSC
+/// render in [`warm_route`], not only the first call.
+static WARMUP_RENDER_LOCK: OnceCell<Arc<Mutex<()>>> = OnceCell::const_new();
 
-async fn warmup_render_lock() -> &'static Mutex<()> {
-    WARMUP_RENDER_LOCK.get_or_init(|| async { Mutex::new(()) }).await
+async fn warmup_render_lock() -> Arc<Mutex<()>> {
+    Arc::clone(WARMUP_RENDER_LOCK.get_or_init(|| async { Arc::new(Mutex::new(())) }).await)
+}
+
+async fn merge_warmup_cache_tags(state: &ServerState, base_tags: Vec<String>) -> Vec<String> {
+    let page_cache_tags = {
+        let renderer = state.renderer.lock().await;
+        let runtime = Arc::clone(&renderer.runtime);
+        drop(renderer);
+        runtime.collect_page_cache_tags().await.unwrap_or_default()
+    };
+
+    response::RouteCachePolicy::merge_cache_tags(base_tags, &page_cache_tags)
 }
 
 pub async fn warm_cache(state: &ServerState) {
     let Some(app_router) = &state.app_router else {
-        info!("[rari] Cache warmup: No app router available, skipping");
+        tracing::info!("[rari] Cache warmup: No app router available, skipping");
         return;
     };
 
     let paths = app_router.warmup_paths();
 
     if paths.is_empty() {
-        info!("[rari] Cache warmup: No routes to warm");
+        tracing::info!("[rari] Cache warmup: No routes to warm");
         return;
     }
 
-    info!("[rari] Cache warmup: Pre-rendering {} routes...", paths.len());
+    tracing::info!("[rari] Cache warmup: Pre-rendering {} routes...", paths.len());
     let start = Instant::now();
 
     let success_count = Arc::new(AtomicUsize::new(0));
@@ -64,7 +84,7 @@ pub async fn warm_cache(state: &ServerState) {
                         success_count.fetch_add(1, Ordering::Relaxed);
                     }
                     Err(e) => {
-                        error!("[rari] Cache warmup: Failed to warm '{}': {}", path, e);
+                        tracing::error!("[rari] Cache warmup: Failed to warm '{}': {}", path, e);
                         error_count.fetch_add(1, Ordering::Relaxed);
                     }
                 }
@@ -73,7 +93,7 @@ pub async fn warm_cache(state: &ServerState) {
         .await;
 
     let elapsed = start.elapsed();
-    info!(
+    tracing::info!(
         "[rari] Cache warmup: Completed in {:.1}ms ({} succeeded, {} failed)",
         elapsed.as_secs_f64() * 1000.0,
         success_count.load(Ordering::Relaxed),
@@ -86,9 +106,8 @@ async fn warm_route(
     state: &ServerState,
     app_router: &Arc<AppRouter>,
     path: &str,
-) -> Result<(), String> {
-    let route_match =
-        app_router.match_route(path).map_err(|e| format!("Route match failed: {e}"))?;
+) -> Result<(), RariError> {
+    let route_match = app_router.match_route(path)?;
 
     if route_match.loading.is_some() {
         return Ok(());
@@ -101,9 +120,10 @@ async fn warm_route(
         Arc::clone(&state.layout_html_cache),
     );
 
-    let request_context = Arc::new(RequestContext::new(route_match.route.path.clone()));
+    let request_context =
+        Arc::new(RequestContext::new(route_match.route.path.clone()).without_layout_html_cache());
 
-    let _render_guard = warmup_render_lock().await.lock().await;
+    let _render_guard = warmup_render_lock().await.lock_owned().await;
 
     let render_result = layout_renderer
         .render_route_with_streaming(
@@ -113,34 +133,37 @@ async fn warm_route(
             false,
         )
         .await
-        .map_err(|e| format!("Render failed: {e}"))?;
+        .map_err(|e| RariError::internal(format!("Render failed: {e}")))?;
 
     context.metadata = collect_page_metadata(state, &route_match, &context).await;
 
     let html = match render_result {
         RenderResult::Static(html) => html,
-        RenderResult::FizzHtmlStream { shell, closing, mut chunks } => {
-            let mut html = String::from_utf8_lossy(&shell).into_owned();
-            while let Some(chunk_result) = chunks.recv().await {
-                match chunk_result {
-                    Ok(data) => html.push_str(&String::from_utf8_lossy(&data)),
-                    Err(_) => break,
-                }
+        RenderResult::Chunked {
+            content_type: ChunkedContentType::Html,
+            shell,
+            closing,
+            mut chunks,
+        } => match drain_chunked_stream(shell, closing, &mut chunks).await {
+            Ok(html) => html,
+            Err(error) => {
+                tracing::warn!("Skipping cache warmup for {path}: chunked stream failed: {error}");
+                return Ok(());
             }
-            html.push_str(&String::from_utf8_lossy(&closing));
-            html
-        }
+        },
         _ => return Ok(()),
     };
 
-    let html = wrap_html_with_metadata(html, context.metadata.as_ref(), state);
-
     let html_cache_key = response::ResponseCache::generate_cache_key(path, None);
-    let etag = response::ResponseCache::generate_etag(html.as_bytes());
     let cache_control = state.config.get_cache_control_for_route(path);
     let cache_policy = response::RouteCachePolicy::from_cache_control(cache_control, path);
+    let for_response_cache = cache_policy.enabled && state.response_cache.config.enabled;
 
-    if cache_policy.enabled && state.response_cache.config.enabled {
+    let html = wrap_html_with_metadata(html, context.metadata.as_ref(), state);
+    let etag = response::ResponseCache::generate_etag(html.as_bytes());
+
+    if for_response_cache {
+        let merged_tags = merge_warmup_cache_tags(state, cache_policy.tags.clone()).await;
         let body_bytes = bytes::Bytes::from(html);
 
         let compressed_gzip = {
@@ -185,7 +208,7 @@ async fn warm_route(
                 cached_at: Instant::now(),
                 ttl: cache_policy.ttl,
                 etag: Some(etag),
-                tags: cache_policy.tags.clone(),
+                tags: merged_tags.clone(),
             },
             compressed_zstd,
             compressed_br,
@@ -200,9 +223,10 @@ async fn warm_route(
 
     if let Ok(rsc_flight_protocol) = rsc_result {
         let rsc_cache_key =
-            response::ResponseCache::generate_cache_key_with_mode(path, None, Some("rsc"));
+            response::ResponseCache::generate_cache_key_with_mode(path, None, Some("rsc"), None);
 
-        if cache_policy.enabled && state.response_cache.config.enabled {
+        if for_response_cache {
+            let merged_tags = merge_warmup_cache_tags(state, cache_policy.tags.clone()).await;
             let mut cache_headers = HeaderMap::new();
 
             if let Some(ref metadata) = context.metadata
@@ -221,7 +245,7 @@ async fn warm_route(
                     cached_at: Instant::now(),
                     ttl: cache_policy.ttl,
                     etag: None,
-                    tags: cache_policy.tags,
+                    tags: merged_tags,
                 },
                 compressed_zstd: None,
                 compressed_br: None,
@@ -247,6 +271,7 @@ fn create_warmup_context(route_match: &AppRouteMatch) -> LayoutRenderContext {
         search_params: FxHashMap::default(),
         headers: FxHashMap::default(),
         pathname: route_match.pathname.clone(),
+        template_navigation_id: None,
         metadata: None,
     }
 }

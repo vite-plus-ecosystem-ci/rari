@@ -49,20 +49,28 @@ impl RouteComposer {
             layouts,
             &[],
             pathname_json,
+            pathname_json,
             error_boundary,
             metadata_json,
             false,
+            pathname_json,
         )
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "composition script needs all route render inputs"
+    )]
     pub fn build_composition_script_with_templates(
         page_render_script: &str,
         layouts: &[LayoutInfo],
         templates: &[TemplateInfo],
         pathname_json: &str,
+        template_key_json: &str,
         error_boundary: Option<&ErrorBoundaryInfo>,
         metadata_json: &str,
         defer_rsc: bool,
+        action_post_url_json: &str,
     ) -> String {
         let mut script = format!(
             r"
@@ -72,10 +80,12 @@ impl RouteComposer {
 
                 const React = globalThis.React;
 
+                if (!globalThis['~rari']) globalThis['~rari'] = {{}};
+                globalThis['~rari'].actionPostUrl = {action_post_url_json};
+
                 if (!globalThis['~suspense']) globalThis['~suspense'] = {{}};
                 globalThis['~suspense'].discoveredBoundaries = [];
                 globalThis['~suspense'].pendingPromises = [];
-                globalThis['~suspense'].pendingPromisesByBoundary = {{}};
                 globalThis['~suspense'].promises = {{}};
                 globalThis['~suspense'].currentBoundaryId = null;
 
@@ -94,7 +104,7 @@ impl RouteComposer {
                 &template.client_component_id,
                 &current_element,
                 &template_var,
-                pathname_json,
+                template_key_json,
             ));
             current_element = template_var;
         }
@@ -151,7 +161,7 @@ impl RouteComposer {
         template_client_component_id: &str,
         current_element: &str,
         template_var: &str,
-        pathname_json: &str,
+        template_key_json: &str,
     ) -> String {
         format!(
             r#"
@@ -164,7 +174,7 @@ impl RouteComposer {
                 '~isClientComponent': true,
             }};
 
-            const templateKey{index} = {pathname_json} + '::' + Date.now();
+            const templateKey{index} = {template_key_json};
             const templateResult{index} = React.createElement(
                 TemplateComponent{index},
                 {{ key: templateKey{index}, children: {current_element} }},
@@ -431,9 +441,11 @@ mod tests {
             &[],
             &[],
             "\"/\"",
+            "\"/\"",
             None,
             "{}",
             false,
+            "\"/\"",
         );
         assert_eq!(empty_tpl, no_tpl);
     }
@@ -445,9 +457,11 @@ mod tests {
             &[],
             &[template_info("template.tsx")],
             "\"/about\"",
+            "\"/about\"",
             None,
             "{}",
             false,
+            "\"/about\"",
         );
 
         assert!(script.contains("TemplateComponent0"));
@@ -471,9 +485,11 @@ mod tests {
             }],
             &[template_info("blog/template.tsx")],
             "\"/blog/hello\"",
+            "\"/blog/hello\"",
             None,
             "{}",
             false,
+            "\"/blog/hello\"",
         );
 
         let page_idx = script.find("pageElement").expect("pageElement present");
@@ -491,9 +507,11 @@ mod tests {
             &[],
             &[template_info("template.tsx"), template_info("about/template.tsx")],
             "\"/about\"",
+            "\"/about\"",
             None,
             "{}",
             false,
+            "\"/about\"",
         );
 
         assert!(script.contains("TemplateComponent0"));

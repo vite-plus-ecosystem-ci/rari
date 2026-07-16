@@ -38,9 +38,46 @@ use crate::{
         },
         module_loader::RariModuleLoader,
     },
-    server::middleware::request_context::RequestContext,
+    server::{actions::action_form_state_sync_script, middleware::request_context::RequestContext},
     with_scope,
 };
+
+fn sync_action_form_state_for_context(
+    js_runtime: &mut deno_core::JsRuntime,
+    request_context: &RequestContext,
+) {
+    let script = action_form_state_sync_script(request_context.action_form_state.as_ref());
+    let _ = js_runtime.execute_script("sync_action_form_state".to_string(), script);
+}
+
+fn clear_action_form_state(js_runtime: &mut deno_core::JsRuntime) {
+    let script = action_form_state_sync_script(None);
+    let _ = js_runtime.execute_script("clear_action_form_state".to_string(), script);
+}
+
+const RESET_USE_CACHE_DYNAMIC_DEPTH_SCRIPT: &str =
+    "if (globalThis['~rari']) globalThis['~rari'].useCacheDynamicDepth = 0;";
+
+const CLEAR_PAGE_CACHE_TAGS_SCRIPT: &str = r"
+if (globalThis['~rari']) {
+    globalThis['~rari'].pageCacheTags ??= new Set();
+    globalThis['~rari'].pageCacheTags.clear();
+}
+";
+
+fn reset_use_cache_dynamic_context(js_runtime: &mut deno_core::JsRuntime) {
+    let _ = js_runtime.execute_script(
+        "reset_use_cache_dynamic_context".to_string(),
+        RESET_USE_CACHE_DYNAMIC_DEPTH_SCRIPT.to_string(),
+    );
+}
+
+fn clear_page_cache_tags(js_runtime: &mut deno_core::JsRuntime) {
+    let _ = js_runtime.execute_script(
+        "clear_page_cache_tags".to_string(),
+        CLEAR_PAGE_CACHE_TAGS_SCRIPT.to_string(),
+    );
+}
 
 type ScriptBatchItem = (String, String, oneshot::Sender<Result<Value, RariError>>);
 type BatchResultSender = mpsc::UnboundedSender<(usize, Result<Value, RariError>)>;
@@ -99,22 +136,60 @@ enum JsRequest {
         expected_context: Arc<RequestContext>,
         result_tx: oneshot::Sender<Result<(), RariError>>,
     },
+    ExecuteScriptWithRequestContext {
+        request_context: Arc<RequestContext>,
+        script_name: String,
+        script_code: String,
+        result_tx: oneshot::Sender<Result<Value, RariError>>,
+    },
     ExecuteScriptForStreaming {
         script_name: String,
         script_code: String,
-        chunk_sender: mpsc::Sender<Result<Vec<u8>, String>>,
+        chunk_sender: mpsc::Sender<Result<Vec<u8>, RariError>>,
         result_tx: oneshot::Sender<Result<(), RariError>>,
     },
 }
 
+#[derive(Clone)]
 pub struct RariRuntime {
     request_sender: mpsc::Sender<JsRequest>,
+    priority_sender: mpsc::Sender<JsRequest>,
+}
+
+fn is_priority_js_request(req: &JsRequest) -> bool {
+    match req {
+        JsRequest::ExecuteScriptWithRequestContext { .. } => true,
+        JsRequest::ExecuteScript { script_name, .. } => script_name.starts_with("execute_action_"),
+        _ => false,
+    }
+}
+
+async fn recv_js_request(
+    priority_receiver: &mut mpsc::Receiver<JsRequest>,
+    request_receiver: &mut mpsc::Receiver<JsRequest>,
+) -> Option<JsRequest> {
+    tokio::select! {
+        biased;
+        req = priority_receiver.recv() => req,
+        req = request_receiver.recv() => req,
+    }
 }
 
 impl RariRuntime {
+    async fn send_js_request(&self, req: JsRequest) -> Result<(), RariError> {
+        let sender =
+            if is_priority_js_request(&req) { &self.priority_sender } else { &self.request_sender };
+
+        sender
+            .send(req)
+            .await
+            .map_err(|_| RariError::js_runtime(JS_EXECUTOR_CHANNEL_CLOSED_ERROR.to_string()))
+    }
+
     #[expect(clippy::too_many_lines)]
     pub fn new(env_vars: Option<FxHashMap<String, String>>) -> Self {
         let (request_sender, mut request_receiver) = mpsc::channel(CHANNEL_CAPACITY);
+        let (priority_sender, mut priority_receiver) = mpsc::channel(CHANNEL_CAPACITY);
 
         thread::spawn(move || {
             #[expect(clippy::expect_used, reason = "Infallible operation with valid inputs")]
@@ -140,7 +215,7 @@ impl RariRuntime {
 
                     while continue_processing {
                         if pending_batches.is_empty() {
-                            match request_receiver.recv().await {
+                            match recv_js_request(&mut priority_receiver, &mut request_receiver).await {
                                 Some(req) => {
                                     let result = handle_js_request(
                                         req,
@@ -162,7 +237,7 @@ impl RariRuntime {
                         } else {
                             tokio::select! {
                                 biased;
-                                request = request_receiver.recv() => {
+                                request = recv_js_request(&mut priority_receiver, &mut request_receiver) => {
                                     match request {
                                         Some(req) => {
                                             let result = handle_js_request(
@@ -213,6 +288,10 @@ impl RariRuntime {
                         ).await;
                     }
 
+                    if !continue_processing {
+                        break;
+                    }
+
                     #[expect(clippy::print_stdout, reason = "Runtime restart notification for debugging")]
                     {
                         println!("[rari] Restarting JS runtime due to error or forced restart");
@@ -225,7 +304,7 @@ impl RariRuntime {
             });
         });
 
-        Self { request_sender }
+        Self { request_sender, priority_sender }
     }
 }
 
@@ -439,7 +518,7 @@ async fn handle_js_request(
                 .map(|spec| spec.contains("/rari_hmr/"))
                 .unwrap_or(false);
             if is_hmr_specifier || !has_existing_hmr_mapping {
-                module_loader.component_specifiers.insert(component_id, specifier);
+                module_loader.register_component_specifier(&component_id, &specifier);
             }
             let _ = result_tx.send(Ok(()));
         }
@@ -448,11 +527,15 @@ async fn handle_js_request(
             let _ = result_tx.send(Ok(()));
         }
         JsRequest::SetRequestContext { request_context, result_tx } => {
+            clear_page_cache_tags(js_runtime);
+            reset_use_cache_dynamic_context(js_runtime);
+            sync_action_form_state_for_context(js_runtime, &request_context);
             js_runtime.op_state().borrow_mut().put(request_context);
             let _ = result_tx.send(Ok(()));
         }
         JsRequest::ClearRequestContext { result_tx } => {
             js_runtime.op_state().borrow_mut().try_take::<Arc<RequestContext>>();
+            clear_action_form_state(js_runtime);
             let _ = result_tx.send(Ok(()));
         }
         JsRequest::ClearRequestContextIfMatches { expected_context, result_tx } => {
@@ -468,8 +551,38 @@ async fn handle_js_request(
 
             if should_clear {
                 js_runtime.op_state().borrow_mut().try_take::<Arc<RequestContext>>();
+                clear_action_form_state(js_runtime);
             }
             let _ = result_tx.send(Ok(()));
+        }
+        JsRequest::ExecuteScriptWithRequestContext {
+            request_context,
+            script_name,
+            script_code,
+            result_tx,
+        } => {
+            let previous_context =
+                js_runtime.op_state().borrow_mut().try_take::<Arc<RequestContext>>();
+            clear_page_cache_tags(js_runtime);
+            reset_use_cache_dynamic_context(js_runtime);
+            sync_action_form_state_for_context(js_runtime, &request_context);
+            js_runtime.op_state().borrow_mut().put(request_context);
+            let result =
+                execute_script(js_runtime, module_loader, &script_name, &script_code).await;
+            js_runtime.op_state().borrow_mut().try_take::<Arc<RequestContext>>();
+            if let Some(previous_context) = previous_context {
+                sync_action_form_state_for_context(js_runtime, &previous_context);
+                js_runtime.op_state().borrow_mut().put(previous_context);
+            } else {
+                clear_action_form_state(js_runtime);
+            }
+            if let Err(e) = &result
+                && is_runtime_restart_needed(e)
+            {
+                let _ = result_tx.send(Err(create_graceful_error()));
+                return Err(RariError::internal("Runtime restart needed".to_string()));
+            }
+            let _ = result_tx.send(result);
         }
         JsRequest::ExecuteScriptForStreaming {
             script_name,
@@ -814,19 +927,18 @@ impl JsRuntimeInterface for RariRuntime {
         script_name: String,
         script_code: String,
     ) -> Pin<Box<dyn Future<Output = Result<Value, RariError>> + Send>> {
-        let request_sender = self.request_sender.clone();
+        let runtime = self.clone();
 
         Box::pin(async move {
             let (response_sender, response_receiver) = oneshot::channel();
 
-            request_sender
-                .send(JsRequest::ExecuteScript {
+            runtime
+                .send_js_request(JsRequest::ExecuteScript {
                     script_name,
                     script_code,
                     result_tx: response_sender,
                 })
-                .await
-                .map_err(|_| RariError::js_runtime(JS_EXECUTOR_CHANNEL_CLOSED_ERROR.to_string()))?;
+                .await?;
 
             response_receiver
                 .await
@@ -1102,11 +1214,38 @@ impl JsRuntimeInterface for RariRuntime {
         })
     }
 
+    fn execute_script_with_request_context(
+        &self,
+        request_context: Arc<RequestContext>,
+        script_name: String,
+        script_code: String,
+    ) -> Pin<Box<dyn Future<Output = Result<Value, RariError>> + Send>> {
+        let runtime = self.clone();
+
+        Box::pin(async move {
+            let (response_sender, response_receiver) = oneshot::channel();
+            runtime
+                .send_js_request(JsRequest::ExecuteScriptWithRequestContext {
+                    request_context,
+                    script_name,
+                    script_code,
+                    result_tx: response_sender,
+                })
+                .await?;
+            response_receiver.await.map_err(|_| {
+                RariError::js_runtime(
+                    "JS executor failed to respond (execute_script_with_request_context)"
+                        .to_string(),
+                )
+            })?
+        })
+    }
+
     fn execute_script_for_streaming(
         &self,
         script_name: String,
         script_code: String,
-        chunk_sender: mpsc::Sender<Result<Vec<u8>, String>>,
+        chunk_sender: mpsc::Sender<Result<Vec<u8>, RariError>>,
     ) -> Pin<Box<dyn Future<Output = Result<(), RariError>> + Send>> {
         let request_sender = self.request_sender.clone();
 

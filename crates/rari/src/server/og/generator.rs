@@ -6,7 +6,7 @@
 use std::{path::PathBuf, string::ToString, sync::Arc, vec::Vec};
 
 use cow_utils::CowUtils;
-use rari_utils::path_to_file_url;
+use rari_error::RariError;
 use rustc_hash::FxHashMap;
 use serde_json::{Map, Value};
 use tokio::{fs, sync::RwLock, task};
@@ -20,8 +20,11 @@ use super::{
 };
 use crate::{
     runtime::JsExecutionRuntime,
-    server::{cache::handler::CacheError, routing::types::ParamValue},
-    utils::float,
+    server::{
+        cache::handler::CacheError, core::utils::component::extract_component_id,
+        loader::SERVER_MANIFEST_PATH, routing::types::ParamValue,
+    },
+    utils::{float, path::path_to_file_url},
 };
 
 pub struct OgImageGenerator {
@@ -80,37 +83,72 @@ impl OgImageGenerator {
         let manifest_data: Value = serde_json::from_str(&content)
             .map_err(|e| OgImageError::InternalError(format!("Failed to parse manifest: {e}")))?;
 
-        let mut manifest = self.manifest.write().await;
-        manifest.clear();
+        let og_images: Vec<OgImageEntry> = manifest_data
+            .get("ogImages")
+            .and_then(|v| v.as_array())
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter_map(|entry| serde_json::from_value::<OgImageEntry>(entry.clone()).ok())
+                    .collect()
+            })
+            .unwrap_or_default();
 
-        if let Some(og_images) = manifest_data.get("ogImages").and_then(|v| v.as_array()) {
+        self.load_og_entries(&og_images, None).await
+    }
+
+    #[expect(clippy::missing_errors_doc)]
+    pub async fn load_og_entries(
+        &self,
+        og_images: &[OgImageEntry],
+        server_manifest: Option<&Value>,
+    ) -> Result<(), OgImageError> {
+        {
+            let mut manifest = self.manifest.write().await;
+            manifest.clear();
+
             for entry in og_images {
-                if let Ok(og_entry) = serde_json::from_value::<OgImageEntry>(entry.clone()) {
-                    if let Some(existing) = manifest.get(&og_entry.path) {
-                        tracing::warn!(
-                            "OG image path collision: '{}' is already used by '{}', overwriting with '{}'",
-                            og_entry.path,
-                            existing.file_path,
-                            og_entry.file_path
-                        );
-                    }
-                    manifest.insert(og_entry.path.clone(), og_entry);
+                if let Some(existing) = manifest.get(&entry.path) {
+                    tracing::warn!(
+                        "OG image path collision: '{}' is already used by '{}', overwriting with '{}'",
+                        entry.path,
+                        existing.file_path,
+                        entry.file_path
+                    );
                 }
+                manifest.insert(entry.path.clone(), entry.clone());
             }
         }
 
-        let server_manifest_path =
-            manifest_path.cow_replace("routes.json", "manifest.json").into_owned();
-        if let Ok(server_content) = fs::read_to_string(&server_manifest_path).await
-            && let Ok(server_data) = serde_json::from_str::<Value>(&server_content)
-            && let Some(components) = server_data.get("components").and_then(|v| v.as_object())
-        {
+        if let Some(manifest) = server_manifest {
+            self.apply_server_manifest(manifest).await
+        } else {
+            self.load_server_manifest_from_file(SERVER_MANIFEST_PATH).await
+        }
+    }
+
+    async fn apply_server_manifest(&self, server_data: &Value) -> Result<(), OgImageError> {
+        if let Some(components) = server_data.get("components").and_then(|v| v.as_object()) {
             let mut server_manifest = self.server_manifest.write().await;
+            server_manifest.clear();
             for (id, component) in components {
                 if let Some(bundle_path) = component.get("bundlePath").and_then(|v| v.as_str()) {
                     server_manifest.insert(id.clone(), bundle_path.to_string());
                 }
             }
+        }
+
+        Ok(())
+    }
+
+    async fn load_server_manifest_from_file(
+        &self,
+        manifest_path: &str,
+    ) -> Result<(), OgImageError> {
+        if let Ok(server_content) = fs::read_to_string(manifest_path).await
+            && let Ok(server_data) = serde_json::from_str::<Value>(&server_content)
+        {
+            self.apply_server_manifest(&server_data).await?;
         }
 
         Ok(())
@@ -263,24 +301,8 @@ impl OgImageGenerator {
         route_path: &str,
         params: &FxHashMap<String, ParamValue>,
     ) -> Result<JsxElement, OgImageError> {
-        let component_id = {
-            let path = entry.file_path.as_str();
-            let path = path.cow_replace(".tsx", "");
-            let path = path.cow_replace(".ts", "");
-            let path = path.cow_replace(".jsx", "");
-            let path = path.cow_replace(".js", "");
-            let path =
-                path.chars()
-                    .map(|c| {
-                        if c.is_alphanumeric() || c == '/' || c == '-' || c == '_' {
-                            c
-                        } else {
-                            '_'
-                        }
-                    })
-                    .collect::<String>();
-            format!("app/{path}")
-        };
+        let component_id = extract_component_id(&format!("app/{}", entry.file_path))
+            .map_err(|e| OgImageError::ExecutionError(format!("Invalid OG component path: {e}")))?;
 
         let server_manifest = self.server_manifest.read().await;
         let bundle_path = server_manifest
@@ -387,7 +409,7 @@ impl OgImageGenerator {
         Ok(JsxElement { element_type, props, children })
     }
 
-    fn encode_webp(image: &image::RgbaImage) -> Result<Vec<u8>, String> {
+    fn encode_webp(image: &image::RgbaImage) -> Result<Vec<u8>, RariError> {
         use webp::Encoder;
 
         let encoder = Encoder::from_rgba(image.as_raw(), image.width(), image.height());
@@ -415,6 +437,23 @@ mod tests {
     use std::env;
 
     use super::*;
+    use crate::server::core::utils::component::extract_component_id;
+
+    #[test]
+    fn test_og_component_id_matches_hashed_manifest_keys() {
+        assert_eq!(
+            extract_component_id("app/opengraph-image.tsx").unwrap(),
+            "app/opengraph-image_7c956ddc"
+        );
+        assert_eq!(
+            extract_component_id("app/docs/[...slug]/opengraph-image.tsx").unwrap(),
+            "app/docs/____slug_/opengraph-image_ef4094d1"
+        );
+        assert_eq!(
+            extract_component_id("app/blog/[slug]/opengraph-image.tsx").unwrap(),
+            "app/blog/_slug_/opengraph-image_2ade8d39"
+        );
+    }
 
     #[tokio::test]
     async fn test_find_og_image_for_static_route() {

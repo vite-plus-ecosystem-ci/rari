@@ -1,14 +1,48 @@
+import { existsSync } from 'node:fs'
+import path from 'node:path'
+import process from 'node:process'
 import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vite-plus'
 
+const rootDir = process.cwd()
+const rariSrc = path.join(rootDir, 'packages/rari/src')
+const useCacheSrc = path.join(rootDir, 'packages/use-cache/src')
+
+function resolvePackageInternal(subpath: string, baseDir: string) {
+  const candidates = [
+    path.join(baseDir, subpath),
+    `${path.join(baseDir, subpath)}.ts`,
+    path.join(baseDir, subpath, 'index.ts'),
+  ]
+  return candidates.find(candidate => existsSync(candidate)) ?? null
+}
+
+function packageInternalAlias() {
+  return {
+    name: 'package-internal-alias',
+    enforce: 'pre' as const,
+    resolveId(source: string, importer?: string) {
+      if (!source.startsWith('@/') || !importer)
+        return null
+
+      const subpath = source.slice(2)
+      if (importer.includes(`${path.sep}packages${path.sep}use-cache${path.sep}`))
+        return resolvePackageInternal(subpath, useCacheSrc)
+
+      if (importer.includes(`${path.sep}packages${path.sep}rari${path.sep}`))
+        return resolvePackageInternal(subpath, rariSrc)
+
+      return null
+    },
+  }
+}
+
 export default defineConfig({
+  plugins: [packageInternalAlias()],
   resolve: {
     alias: {
       '@rari/use-cache/runtime/cache-wrapper': fileURLToPath(
         new URL('./packages/use-cache/dist/runtime/cache-wrapper.mjs', import.meta.url),
-      ),
-      '@rari/use-cache/runtime/deterministic-stringify': fileURLToPath(
-        new URL('./packages/use-cache/dist/runtime/deterministic-stringify.mjs', import.meta.url),
       ),
       '@rari/use-cache-darwin-arm64': fileURLToPath(
         new URL('./packages/use-cache-darwin-arm64', import.meta.url),
@@ -31,7 +65,11 @@ export default defineConfig({
       '@rari/use-cache': fileURLToPath(
         new URL('./packages/use-cache/src', import.meta.url),
       ),
+      '@rari/logger': fileURLToPath(
+        new URL('./packages/logger/src', import.meta.url),
+      ),
       '@rari': fileURLToPath(new URL('./packages/rari/src', import.meta.url)),
+      '@rari/runtime': fileURLToPath(new URL('./packages/rari/src/runtime', import.meta.url)),
     },
   },
   test: {
@@ -69,6 +107,10 @@ export default defineConfig({
       '**/dist',
       '**/node_modules',
       'packages/*/bin',
+      'packages/rari-*/',
+      'packages/use-cache-*/',
+      '**/.pnpm-store/',
+      '**/.build',
       '**/.cache',
       '**/coverage',
       '**/test-results',
@@ -480,6 +522,10 @@ export default defineConfig({
               prefer: 'type-imports',
             },
           ],
+          'typescript/method-signature-style': [
+            'error',
+            'property',
+          ],
           'typescript/no-import-type-side-effects': 'error',
         },
         plugins: [
@@ -585,6 +631,14 @@ export default defineConfig({
       },
       {
         files: [
+          'tools/bundle-react-esm/*.ts',
+        ],
+        rules: {
+          'no-console': 'off',
+        },
+      },
+      {
+        files: [
           '**/*.js',
           '**/*.cjs',
         ],
@@ -630,7 +684,11 @@ export default defineConfig({
           'no-undef': 'off',
           'no-unused-vars': 'off',
           'no-use-before-define': 'off',
+          'typescript/ban-ts-comment': 'off',
         },
+        plugins: [
+          'typescript',
+        ],
       },
     ],
     options: {

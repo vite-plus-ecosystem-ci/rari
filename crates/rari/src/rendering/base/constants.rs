@@ -16,7 +16,52 @@ pub const DEFAULT_MAX_MEMORY_PER_COMPONENT_MB: usize = 50;
 pub const DEFAULT_MAX_CACHE_SIZE: usize = 1000;
 
 pub const V8_CACHE_CLEAR_SCRIPT: &str = include_str!("js/v8_cache_clear.ts");
-pub const SERVER_ACTION_INVOCATION_SCRIPT: &str = include_str!("js/server_action_invocation.ts");
+// Embedded action handler scripts (validation core v2: isolate-safe init)
+pub const ACTION_FLIGHT_ENCODE_SCRIPT: &str = concat!(
+    include_str!("js/action_flight_shared.ts"),
+    include_str!("js/action_flight_encode.ts"),
+);
+pub const ACTION_HANDLER_SCRIPT: &str = concat!(
+    "// rari-action-handler-v3\n",
+    include_str!("js/action_fn_resolver.ts"),
+    include_str!("js/action_args_validation.core.ts"),
+    include_str!("js/action_args_validation_v8.ts"),
+    include_str!("js/action_flight_shared.ts"),
+    include_str!("js/action_handler.ts"),
+);
+
+pub const GET_RSC_BINARY_B64: &str = r"(function() {
+    const bin = globalThis['~rari']?.lastRscBinary;
+    if (!bin || bin.length === 0) return null;
+    let str = '';
+    for (let i = 0; i < bin.length; i++) {
+        str += String.fromCharCode(bin[i]);
+    }
+    return btoa(str);
+})()";
+
+pub const FIZZ_RENDER_SCRIPT: &str = include_str!("../layout/js/fizz_render.ts");
+pub const STREAMING_FIZZ_SCRIPT: &str = include_str!("../layout/js/streaming_fizz.ts");
+pub const RSC_RENDERER_SCRIPT: &str = include_str!("js/rsc_renderer.ts");
+
+pub const STREAMING_PIPELINE_READY_CHECK: &str = "typeof globalThis['~rari']?.renderStreamingDocument === 'function' \
+        && typeof globalThis['~rari']?.renderStaticDocument === 'function'";
+
+pub const LOAD_FULL_REACT_VENDORS_SCRIPT: &str = r"
+(function() {
+    if (typeof globalThis['~rari']?.loadFullReactVendors === 'function')
+        return globalThis['~rari'].loadFullReactVendors();
+    return false;
+})()
+";
+
+pub const LOAD_RSC_VENDORS_SCRIPT: &str = r"
+(function() {
+    if (typeof globalThis['~rari']?.loadRscReactVendors === 'function')
+        return globalThis['~rari'].loadRscReactVendors();
+    return false;
+})()
+";
 
 pub const EXTENSION_CHECKS: &str = r"(function () {
   const checks = {};

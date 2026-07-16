@@ -24,6 +24,12 @@ pub const ENV_INJECTION_SCRIPT: &str = r"
 })();
 ";
 
+pub const NODE_BOOTSTRAP_SCRIPT: &str = r"
+(() => {
+    globalThis.Deno.core.createLazyLoader('ext:init_runtime/init_node_bootstrap.ts')();
+})();
+";
+
 pub const MODULE_CHECK_SCRIPT: &str = r"
 (function() {
     if (!globalThis.RscModuleManager) {
@@ -40,7 +46,8 @@ pub const PROMISE_SETUP_SCRIPT: &str = r#"
         const promise = globalThis['~promises'].currentObject;
         if (!promise || typeof promise.then !== 'function') {
             globalThis['~promises'].resolvedValue = {
-                '~error': "Not a valid promise",
+                '~error': true,
+                message: "Not a valid promise",
                 received: typeof promise,
                 promiseToString: String(promise)
             };
@@ -80,11 +87,7 @@ pub const PROMISE_EXTRACT_SCRIPT: &str = r#"
         return globalThis['~promises'].resolvedValue;
     } else {
         return {
-            '~timeoutError': "Promise did not resolve in time",
-            '~debugInfo': {
-                completion_flag: globalThis['~promises'].resolutionComplete,
-                resolved_value: globalThis['~promises'].resolvedValue
-            }
+            '~timeoutError': "Promise did not resolve in time"
         };
     }
 })()

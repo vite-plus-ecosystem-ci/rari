@@ -1,24 +1,25 @@
 use std::{
     cell::RefCell,
-    cmp::Ordering::{Greater, Less},
+    cmp::Ordering,
     collections::BTreeMap,
     rc::Rc,
-    sync::Arc,
+    sync::{Arc, OnceLock},
     time::Duration,
 };
 
 use axum::http::HeaderMap;
-use deno_core::{OpDecl, OpState, op2};
+use deno_core::{ModuleSpecifier, OpDecl, OpState, op2};
 use deno_error::JsErrorBox;
+use deno_runtime::BootstrapOptions;
+use rari_error::RariError;
 use serde::Deserialize;
 use tokio::sync::mpsc;
-use tracing::error;
 
 use crate::{
-    rendering::base::sanitize_component_output,
+    rendering::base,
     server::{
-        core::utils::client::get_http_client,
-        handlers::actions::{is_valid_attr_value, is_valid_cookie_name, is_valid_cookie_value},
+        actions,
+        core::utils::client,
         middleware::request_context::{PendingCookie, PendingCookieKey, RequestContext},
     },
 };
@@ -61,7 +62,7 @@ enum RscStreamOperation {
 #[derive(Default)]
 #[non_exhaustive]
 pub struct StreamOpState {
-    pub chunk_sender: Option<mpsc::Sender<Result<Vec<u8>, String>>>,
+    pub chunk_sender: Option<mpsc::Sender<Result<Vec<u8>, RariError>>>,
     pub current_stream_id: Option<String>,
     pub row_counter: u32,
 }
@@ -76,12 +77,17 @@ impl StreamOpState {
 
 fn parse_hex_row_id(row_id: &str, context: &str) -> Result<u32, JsErrorBox> {
     if !row_id.chars().all(|c| c.is_ascii_hexdigit()) {
-        error!("op_send_chunk_to_rust: invalid row_id '{}' for {}", row_id, context);
+        tracing::error!("op_send_chunk_to_rust: invalid row_id '{}' for {}", row_id, context);
         return Err(JsErrorBox::generic(format!("Invalid row_id: {row_id}")));
     }
 
     u32::from_str_radix(row_id, 16).map_err(|e| {
-        error!("op_send_chunk_to_rust: invalid row_id '{}' for {}: {}", row_id, context, e);
+        tracing::error!(
+            "op_send_chunk_to_rust: invalid row_id '{}' for {}: {}",
+            row_id,
+            context,
+            e
+        );
         JsErrorBox::generic(format!("Invalid row_id: {row_id}"))
     })
 }
@@ -98,7 +104,7 @@ pub async fn op_send_chunk_to_rust(
                 "Invalid JSON for RSC operation: {e}. JSON length: {}",
                 operation_json.len()
             );
-            error!("{err_msg}");
+            tracing::error!("{err_msg}");
             return Err(JsErrorBox::generic(err_msg));
         }
     };
@@ -133,7 +139,7 @@ pub async fn op_send_chunk_to_rust(
             let rsc_row = format!("{row_id_num:x}:M{module_data}");
 
             if sender.send(Ok(rsc_row.into_bytes())).await.is_err() {
-                error!("op_send_chunk_to_rust: receiver dropped for module reference.");
+                tracing::error!("op_send_chunk_to_rust: receiver dropped for module reference.");
             }
         }
         (Some(sender), RscStreamOperation::ReactElement { row_id, element }) => {
@@ -141,7 +147,7 @@ pub async fn op_send_chunk_to_rust(
             let rsc_row = format!("{row_id_num:x}:J{element}");
 
             if sender.send(Ok(rsc_row.into_bytes())).await.is_err() {
-                error!("op_send_chunk_to_rust: receiver dropped for React element.");
+                tracing::error!("op_send_chunk_to_rust: receiver dropped for React element.");
             }
         }
         (Some(sender), RscStreamOperation::Symbol { row_id, symbol_ref }) => {
@@ -149,13 +155,13 @@ pub async fn op_send_chunk_to_rust(
             let rsc_row = format!("{row_id_num:x}:S\"{symbol_ref}\"");
 
             if sender.send(Ok(rsc_row.into_bytes())).await.is_err() {
-                error!("op_send_chunk_to_rust: receiver dropped for symbol reference.");
+                tracing::error!("op_send_chunk_to_rust: receiver dropped for symbol reference.");
             }
         }
         (Some(sender), RscStreamOperation::Error { row_id, message, stack, phase, digest }) => {
-            error!("Streaming error in row {row_id}: {message}");
+            tracing::error!("Streaming error in row {row_id}: {message}");
             if let Some(stack_trace) = &stack {
-                error!("Stack trace: {stack_trace}");
+                tracing::error!("Stack trace: {stack_trace}");
             }
 
             let error_data = serde_json::json!({
@@ -169,12 +175,12 @@ pub async fn op_send_chunk_to_rust(
             let rsc_row = format!("{row_id_num:x}:E{error_data}");
 
             if sender.send(Ok(rsc_row.into_bytes())).await.is_err() {
-                error!("op_send_chunk_to_rust: receiver dropped for error message.");
+                tracing::error!("op_send_chunk_to_rust: receiver dropped for error message.");
             }
         }
         (Some(_sender), RscStreamOperation::Complete { final_row_id: _ }) => {}
         (None, operation) => {
-            error!("No sender available for operation: {operation:?}");
+            tracing::error!("No sender available for operation: {operation:?}");
             return Err(JsErrorBox::generic("No chunk sender available"));
         }
     }
@@ -239,14 +245,91 @@ pub fn create_error_operation(
     .to_string()
 }
 
+#[op2(fast)]
+pub fn op_rari_has_node_modules_dir(state: &OpState) -> bool {
+    state.try_borrow::<BootstrapOptions>().is_some_and(|options| options.has_node_modules_dir)
+}
+
+#[op2]
+#[string]
+pub fn op_main_module(state: &OpState) -> String {
+    state.borrow::<ModuleSpecifier>().to_string()
+}
+
+/// Expensive on Windows; mirrors `deno_runtime::ops::runtime::op_ppid`.
+#[op2(fast)]
+#[number]
+pub fn op_ppid() -> i64 {
+    #[cfg(windows)]
+    {
+        use std::mem;
+
+        use windows_sys::Win32::{
+            Foundation::{CloseHandle, INVALID_HANDLE_VALUE},
+            System::{
+                Diagnostics::ToolHelp::{
+                    CreateToolhelp32Snapshot, PROCESSENTRY32, Process32First, Process32Next,
+                    TH32CS_SNAPPROCESS,
+                },
+                Threading::GetCurrentProcessId,
+            },
+        };
+
+        // SAFETY: Win32 calls
+        unsafe {
+            let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+            if snapshot == INVALID_HANDLE_VALUE {
+                return -1;
+            }
+
+            let mut entry: PROCESSENTRY32 = mem::zeroed();
+            entry.dwSize = mem::size_of::<PROCESSENTRY32>() as u32;
+
+            let success = Process32First(snapshot, &mut entry);
+            if success == 0 {
+                CloseHandle(snapshot);
+                return -1;
+            }
+
+            let this_pid = GetCurrentProcessId();
+            while entry.th32ProcessID != this_pid {
+                let success = Process32Next(snapshot, &mut entry);
+                if success == 0 {
+                    CloseHandle(snapshot);
+                    return -1;
+                }
+            }
+            CloseHandle(snapshot);
+
+            entry.th32ParentProcessID.into()
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::process::parent_id;
+        parent_id().into()
+    }
+}
+
+pub fn rari_main_module() -> ModuleSpecifier {
+    static MAIN: OnceLock<ModuleSpecifier> = OnceLock::new();
+    #[expect(clippy::expect_used, reason = "Static main module URL is valid")]
+    MAIN.get_or_init(|| ModuleSpecifier::parse("file:///rari").expect("valid rari main module url"))
+        .clone()
+}
+
 pub fn get_streaming_ops() -> Vec<OpDecl> {
     vec![
+        op_rari_has_node_modules_dir(),
+        op_main_module(),
+        op_ppid(),
         op_send_chunk_to_rust(),
         op_fizz_chunk(),
         op_fizz_done(),
         op_internal_log(),
         op_sanitize_html(),
         op_get_cookies(),
+        op_get_request_headers(),
         op_set_cookie(),
         op_delete_cookie(),
     ]
@@ -272,6 +355,7 @@ pub async fn op_fizz_chunk(
                 if let Some(stream_op_state) = op_state_ref.try_borrow_mut::<StreamOpState>() {
                     stream_op_state.chunk_sender.take();
                 }
+                tracing::debug!("Fizz stream client disconnected before chunk was sent");
                 return Err(JsErrorBox::generic("Fizz stream receiver disconnected"));
             }
             Ok(())
@@ -289,13 +373,13 @@ pub fn op_fizz_done(state: &mut OpState) {
 
 #[op2(fast)]
 pub fn op_internal_log(#[string] message: &str) {
-    error!("[rari] {message}");
+    tracing::debug!("[rari] {message}");
 }
 
 #[op2]
 #[string]
 pub fn op_sanitize_html(#[string] html: &str, #[string] _component_id: &str) -> String {
-    sanitize_component_output(html)
+    base::sanitize_html_output(html)
 }
 
 fn http_status_text(status: u16) -> &'static str {
@@ -366,7 +450,7 @@ pub async fn op_fetch_with_cache(
                 }))
             }
             Err(e) => {
-                error!("Fetch failed for {}: {}", url, e);
+                tracing::error!("Fetch failed for {}: {}", url, e);
                 Ok(serde_json::json!({
                     "ok": false,
                     "status": 500,
@@ -389,12 +473,12 @@ pub async fn op_fetch_with_cache(
                 "tags": Vec::<String>::new()
             })),
             Err(e) => {
-                error!("Fetch failed for {}: {}", url, e);
+                tracing::error!("Fetch failed for {}: {}", url, e);
                 Ok(serde_json::json!({
                     "ok": false,
                     "status": 500,
                     "statusText": "Internal Server Error",
-                    "error": e,
+                    "error": e.to_string(),
                     "cached": false,
                     "tags": Vec::<String>::new()
                 }))
@@ -406,8 +490,8 @@ pub async fn op_fetch_with_cache(
 async fn perform_simple_fetch(
     url: &str,
     options: &rustc_hash::FxHashMap<String, String>,
-) -> Result<(u16, String, serde_json::Map<String, serde_json::Value>), String> {
-    let client = get_http_client()?;
+) -> Result<(u16, String, serde_json::Map<String, serde_json::Value>), RariError> {
+    let client = client::get_http_client()?;
     let mut request = client.get(url);
 
     if let Some(headers_str) = options.get("headers")
@@ -422,13 +506,17 @@ async fn perform_simple_fetch(
 
     request = request.timeout(Duration::from_millis(timeout));
 
-    let response = request.send().await.map_err(|e| format!("Request failed: {e}"))?;
+    let response =
+        request.send().await.map_err(|e| RariError::network(format!("Request failed: {e}")))?;
 
     let status = response.status().as_u16();
     let headers = response.headers().clone();
     let headers_obj = headers_to_json(&headers);
 
-    let body = response.text().await.map_err(|e| format!("Failed to read response: {e}"))?;
+    let body = response
+        .text()
+        .await
+        .map_err(|e| RariError::network(format!("Failed to read response: {e}")))?;
 
     Ok((status, body, headers_obj))
 }
@@ -461,8 +549,8 @@ pub fn op_get_cookies(state: Rc<RefCell<OpState>>) -> String {
         let a_is_delete = a_cookie.max_age == Some(0);
         let b_is_delete = b_cookie.max_age == Some(0);
         match (a_is_delete, b_is_delete) {
-            (true, false) => Less,
-            (false, true) => Greater,
+            (true, false) => Ordering::Less,
+            (false, true) => Ordering::Greater,
             _ => {
                 let a_path_len = a_key.path.as_deref().unwrap_or("").len();
                 let b_path_len = b_key.path.as_deref().unwrap_or("").len();
@@ -483,6 +571,18 @@ pub fn op_get_cookies(state: Rc<RefCell<OpState>>) -> String {
     }
 
     cookies.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join("; ")
+}
+
+#[allow(clippy::allow_attributes, clippy::needless_pass_by_value)]
+#[op2]
+#[string]
+pub fn op_get_request_headers(state: Rc<RefCell<OpState>>) -> String {
+    let op_state_ref = state.borrow();
+    let Some(ctx) = op_state_ref.try_borrow::<Arc<RequestContext>>() else {
+        return "{}".to_string();
+    };
+
+    serde_json::to_string(&ctx.request_headers).unwrap_or_else(|_| "{}".to_string())
 }
 
 #[derive(serde::Deserialize)]
@@ -512,11 +612,11 @@ pub fn op_set_cookie(
     state: Rc<RefCell<OpState>>,
     #[serde] args: SetCookieArgs,
 ) -> Result<(), JsErrorBox> {
-    if !is_valid_cookie_name(&args.name) {
+    if !actions::is_valid_cookie_name(&args.name) {
         return Err(JsErrorBox::type_error(format!("Invalid cookie name: '{}'", args.name)));
     }
 
-    if !is_valid_cookie_value(&args.value) {
+    if !actions::is_valid_cookie_value(&args.value) {
         return Err(JsErrorBox::type_error(format!(
             "Invalid cookie value for '{}': contains invalid characters",
             args.name
@@ -524,7 +624,7 @@ pub fn op_set_cookie(
     }
 
     if let Some(ref path) = args.path
-        && !is_valid_attr_value(path)
+        && !actions::is_valid_attr_value(path)
     {
         return Err(JsErrorBox::type_error(format!(
             "Invalid cookie path for '{}': '{}'",
@@ -533,7 +633,7 @@ pub fn op_set_cookie(
     }
 
     if let Some(ref domain) = args.domain
-        && !is_valid_attr_value(domain)
+        && !actions::is_valid_attr_value(domain)
     {
         return Err(JsErrorBox::type_error(format!(
             "Invalid cookie domain for '{}': '{}'",
@@ -665,7 +765,7 @@ mod tests {
         assert_eq!(row_id_2, "1");
         assert_eq!(stream_state.row_counter, 2);
 
-        let (sender, _receiver) = mpsc::channel::<Result<Vec<u8>, String>>(32);
+        let (sender, _receiver) = mpsc::channel::<Result<Vec<u8>, RariError>>(32);
         stream_state.chunk_sender = Some(sender);
 
         assert!(stream_state.chunk_sender.is_some());

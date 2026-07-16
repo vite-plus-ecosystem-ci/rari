@@ -3,8 +3,7 @@ use std::{env, rc::Rc, string::ToString, time::Duration};
 use deno_core::{JsRuntime, error::AnyError, v8};
 use rari_error::RariError;
 use serde_json::Value;
-use tokio::{sync::mpsc, time::timeout};
-use tracing::error;
+use tokio::{sync::mpsc, time};
 
 use crate::{
     runtime::{
@@ -126,7 +125,7 @@ async fn execute_as_module(
 
     match eval_result {
         Ok(()) => {
-            match timeout(
+            match time::timeout(
                 Duration::from_millis(10),
                 run_event_loop_with_error_handling(
                     runtime,
@@ -233,7 +232,7 @@ async fn handle_promise_result(
         let context = scope.get_current_context();
         let global = context.global(scope);
         let Some(key) = v8::String::new(scope, "__temp_promise_ref__") else {
-            error!("Failed to create V8 string for __temp_promise_ref__");
+            tracing::error!("Failed to create V8 string for __temp_promise_ref__");
             return Err(RariError::internal("Failed to create V8 string".to_string()));
         };
         global.set(scope, key.into(), local_v8_val);
@@ -415,7 +414,7 @@ pub async fn execute_script_for_streaming(
     module_loader: &Rc<RariModuleLoader>,
     script_name: &str,
     script_code: &str,
-    chunk_sender: mpsc::Sender<Result<Vec<u8>, String>>,
+    chunk_sender: mpsc::Sender<Result<Vec<u8>, RariError>>,
 ) -> Result<(), RariError> {
     {
         let op_state_rc = runtime.op_state();
@@ -447,15 +446,14 @@ pub async fn execute_script_for_streaming(
     };
 
     if let Some(sender) = leftover_sender {
-        let error_message = if let Err(err) = &result {
-            err.to_string()
-        } else {
-            format!("Streaming script '{script_name}' ended without completing the stream")
+        let stream_err = match &result {
+            Err(err) => err.clone(),
+            Ok(_) => RariError::js_execution(format!(
+                "Streaming script '{script_name}' ended without completing the stream"
+            )),
         };
 
-        let _ = sender
-            .send(Err(format!("Streaming script '{script_name}' failed: {error_message}")))
-            .await;
+        let _ = sender.send(Err(stream_err)).await;
     }
 
     result?;

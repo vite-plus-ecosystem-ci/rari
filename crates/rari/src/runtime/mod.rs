@@ -5,14 +5,15 @@ use std::{
 };
 
 use cow_utils::CowUtils;
+use deno_core::ModuleId;
 use rari_error::RariError;
 use regex::Regex;
-use serde_json::{Value, json};
+use rustc_hash::FxHashMap;
+use serde_json::Value;
 use tokio::{
     sync::mpsc::{Sender, UnboundedReceiver},
     time,
 };
-use tracing::error;
 
 pub mod ext;
 pub mod factory;
@@ -22,14 +23,16 @@ pub mod transpile;
 
 use factory::JsRuntimeInterface;
 
-use crate::server::{
-    middleware::request_context::RequestContext,
-    rendering::metadata::{finalize_metadata, merge_metadata},
-    routing::types::ParamValue,
+use crate::{
+    runtime::factory::RariRuntime,
+    server::{
+        middleware::request_context::RequestContext, rendering::metadata,
+        routing::types::ParamValue,
+    },
 };
 
 pub struct JsExecutionRuntime {
-    runtime: Arc<factory::RariRuntime>,
+    runtime: Arc<RariRuntime>,
     timeout_ms: u64,
 }
 
@@ -56,9 +59,21 @@ fn is_esm_code(code: &str) -> bool {
     regex.is_match(code)
 }
 
+fn parse_string_array_value(value: &Value) -> Vec<String> {
+    if let Some(items) = value.as_array() {
+        return items.iter().filter_map(|item| item.as_str().map(ToString::to_string)).collect();
+    }
+
+    if let Some(text) = value.as_str() {
+        return serde_json::from_str(text).unwrap_or_default();
+    }
+
+    Vec::new()
+}
+
 #[expect(clippy::missing_errors_doc)]
 impl JsExecutionRuntime {
-    pub fn new(env_vars: Option<rustc_hash::FxHashMap<String, String>>) -> Self {
+    pub fn new(env_vars: Option<FxHashMap<String, String>>) -> Self {
         let runtime = if let Some(env_vars) = env_vars {
             factory::create_runtime_with_env(env_vars)
         } else {
@@ -102,7 +117,7 @@ impl JsExecutionRuntime {
         &self,
         script_name: String,
         script_code: String,
-        chunk_sender: Sender<Result<Vec<u8>, String>>,
+        chunk_sender: Sender<Result<Vec<u8>, RariError>>,
     ) -> Result<(), RariError> {
         let runtime = Arc::clone(&self.runtime);
         runtime.execute_script_for_streaming(script_name, script_code, chunk_sender).await
@@ -112,10 +127,10 @@ impl JsExecutionRuntime {
         &self,
         layout_paths: Vec<String>,
         page_path: String,
-        params: rustc_hash::FxHashMap<String, ParamValue>,
-        search_params: rustc_hash::FxHashMap<String, Vec<String>>,
+        params: FxHashMap<String, ParamValue>,
+        search_params: FxHashMap<String, Vec<String>>,
     ) -> Result<Value, RariError> {
-        let data = json!({
+        let data = serde_json::json!({
             "layoutPaths": layout_paths,
             "pagePath": page_path,
             "params": params,
@@ -143,14 +158,40 @@ impl JsExecutionRuntime {
             RariError::serialization("Expected metadata list to be an array".to_string())
         })?;
 
-        let mut merged_metadata = json!({});
+        let mut merged_metadata = serde_json::json!({});
         for metadata_item in metadata_array {
-            merged_metadata = merge_metadata(&merged_metadata, metadata_item);
+            merged_metadata = metadata::merge_metadata(&merged_metadata, metadata_item);
         }
 
-        finalize_metadata(&mut merged_metadata);
+        metadata::finalize_metadata(&mut merged_metadata);
 
         Ok(merged_metadata)
+    }
+
+    pub async fn collect_page_cache_tags(&self) -> Result<Vec<String>, RariError> {
+        const SCRIPT: &str = r"(() => {
+            const tags = new Set(
+                globalThis['~rari']?.pageCacheTags ? [...globalThis['~rari'].pageCacheTags] : [],
+            );
+            const fromRegistry = globalThis.__rariGetActiveUseCacheTags?.() ?? [];
+            for (const tag of fromRegistry)
+                tags.add(tag);
+            return [...tags];
+        })()";
+
+        let result =
+            self.execute_script("collect_page_cache_tags".to_string(), SCRIPT.to_string()).await?;
+
+        Ok(parse_string_array_value(&result))
+    }
+
+    pub async fn is_dynamic_render(&self) -> Result<bool, RariError> {
+        const SCRIPT: &str = "((globalThis['~rari']?.useCacheDynamicDepth ?? 0) > 0)";
+
+        let result =
+            self.execute_script("is_dynamic_render".to_string(), SCRIPT.to_string()).await?;
+
+        Ok(result.as_bool().unwrap_or(false))
     }
 
     pub async fn execute_function(
@@ -175,7 +216,7 @@ impl JsExecutionRuntime {
         }
     }
 
-    pub async fn load_es_module(&self, specifier: &str) -> Result<deno_core::ModuleId, RariError> {
+    pub async fn load_es_module(&self, specifier: &str) -> Result<ModuleId, RariError> {
         let runtime = Arc::clone(&self.runtime);
         let specifier = specifier.to_string();
 
@@ -193,10 +234,7 @@ impl JsExecutionRuntime {
         }
     }
 
-    pub async fn evaluate_module(
-        &self,
-        module_id: deno_core::ModuleId,
-    ) -> Result<Value, RariError> {
+    pub async fn evaluate_module(&self, module_id: ModuleId) -> Result<Value, RariError> {
         let runtime = Arc::clone(&self.runtime);
 
         match time::timeout(
@@ -253,10 +291,7 @@ impl JsExecutionRuntime {
         }
     }
 
-    pub async fn get_module_namespace(
-        &self,
-        module_id: deno_core::ModuleId,
-    ) -> Result<Value, RariError> {
+    pub async fn get_module_namespace(&self, module_id: ModuleId) -> Result<Value, RariError> {
         let runtime = Arc::clone(&self.runtime);
 
         match time::timeout(
@@ -302,21 +337,34 @@ impl JsExecutionRuntime {
                     deleted = true;
                 }}
 
-                if (globalThis['~serverFunctions']?.all) {{
-                    const prefix = componentId + ':';
-                    for (const key in globalThis['~serverFunctions'].all) {{
-                        if (key === componentId || key.startsWith(prefix)) {{
-                            delete globalThis['~serverFunctions'].all[key];
+                if (globalThis['~rari']?.ssrModules) {{
+                    const colonPrefix = componentId + ':';
+                    const hashPrefix = componentId + '#';
+                    for (const key in globalThis['~rari'].ssrModules) {{
+                        if (key === componentId || key.startsWith(colonPrefix) || key.startsWith(hashPrefix)) {{
+                            delete globalThis['~rari'].ssrModules[key];
                             deleted = true;
                         }}
                     }}
                 }}
 
-                if (globalThis['~serverFunctions']?.exported) {{
-                    const prefix = componentId + ':';
-                    for (const key in globalThis['~serverFunctions'].exported) {{
-                        if (key === componentId || key.startsWith(prefix)) {{
-                            delete globalThis['~serverFunctions'].exported[key];
+                if (globalThis['~rari']?.serverManifest) {{
+                    const colonPrefix = componentId + ':';
+                    const hashPrefix = componentId + '#';
+                    for (const key in globalThis['~rari'].serverManifest) {{
+                        if (key === componentId || key.startsWith(colonPrefix) || key.startsWith(hashPrefix)) {{
+                            delete globalThis['~rari'].serverManifest[key];
+                            deleted = true;
+                        }}
+                    }}
+                }}
+
+                if (globalThis['~rari']?.registeredServerFunctions) {{
+                    const colonPrefix = componentId + ':';
+                    const hashPrefix = componentId + '#';
+                    for (const key of globalThis['~rari'].registeredServerFunctions) {{
+                        if (key === componentId || key.startsWith(colonPrefix) || key.startsWith(hashPrefix)) {{
+                            globalThis['~rari'].registeredServerFunctions.delete(key);
                             deleted = true;
                         }}
                     }}
@@ -324,11 +372,6 @@ impl JsExecutionRuntime {
 
                 if (globalThis['~rsc']?.modules?.[componentId]) {{
                     delete globalThis['~rsc'].modules[componentId];
-                    deleted = true;
-                }}
-
-                if (globalThis['~rsc']?.components?.[componentId]) {{
-                    delete globalThis['~rsc'].components[componentId];
                     deleted = true;
                 }}
 
@@ -455,8 +498,7 @@ impl JsExecutionRuntime {
                     RariError::js_execution(error_msg)
                 })?;
 
-            let success =
-                result.get("success").and_then(serde_json::Value::as_bool).unwrap_or(false);
+            let success = result.get("success").and_then(Value::as_bool).unwrap_or(false);
 
             if !success {
                 let error_msg =
@@ -483,6 +525,28 @@ impl JsExecutionRuntime {
                     Err(RariError::js_execution(error_msg))
                 }
             }
+        }
+    }
+
+    pub async fn execute_script_with_request_context(
+        &self,
+        request_context: Arc<RequestContext>,
+        script_name: String,
+        script_code: String,
+    ) -> Result<Value, RariError> {
+        let runtime = Arc::clone(&self.runtime);
+
+        match time::timeout(
+            Duration::from_millis(self.timeout_ms),
+            runtime.execute_script_with_request_context(request_context, script_name, script_code),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => Err(RariError::timeout(format!(
+                "Script execution with request context timed out after {} ms",
+                self.timeout_ms
+            ))),
         }
     }
 
@@ -557,11 +621,17 @@ impl JsExecutionRuntime {
         match (result, clear_result) {
             (Ok(value), Ok(())) => Ok(value),
             (Ok(value), Err(clear_err)) => {
-                error!("Failed to clear request context after successful operation: {}", clear_err);
+                tracing::error!(
+                    "Failed to clear request context after successful operation: {}",
+                    clear_err
+                );
                 Ok(value)
             }
             (Err(op_err), Err(clear_err)) => {
-                error!("Failed to clear request context after operation error: {}", clear_err);
+                tracing::error!(
+                    "Failed to clear request context after operation error: {}",
+                    clear_err
+                );
                 Err(op_err)
             }
             (Err(op_err), Ok(())) => Err(op_err),

@@ -138,6 +138,8 @@ impl CacheConfig {
 pub struct UseCacheConfig {
     #[serde(default)]
     pub remote: Option<CacheLayerConfig>,
+    #[serde(default, rename = "buildId")]
+    pub build_id: Option<String>,
 }
 
 impl Default for RedirectConfig {
@@ -311,12 +313,11 @@ pub struct RscHtmlConfig {
     pub enabled: bool,
     pub timeout_ms: u64,
     pub cache_template: bool,
-    pub pretty_print: bool,
 }
 
 impl Default for RscHtmlConfig {
     fn default() -> Self {
-        Self { enabled: true, timeout_ms: 5000, cache_template: true, pretty_print: false }
+        Self { enabled: true, timeout_ms: 5000, cache_template: true }
     }
 }
 
@@ -400,7 +401,25 @@ impl Config {
         };
         config.mode = mode;
         config.apply_mode_cache_control();
+        config.sanitize_use_cache_for_mode();
         Ok(config)
+    }
+
+    fn sanitize_use_cache_for_mode(&mut self) {
+        if self.mode != Mode::Production {
+            return;
+        }
+
+        let Some(remote) = self.use_cache.remote.as_ref() else {
+            return;
+        };
+
+        if remote.handler == "test" {
+            tracing::warn!(
+                "Invalid useCache.remote: handler='test' is for e2e tests only and is not allowed in production. Ignoring remote cache config."
+            );
+            self.use_cache.remote = None;
+        }
     }
 
     pub fn new(mode: Mode) -> Self {
@@ -413,10 +432,7 @@ impl Config {
                 ..default_config.vite
             },
             rsc: default_config.rsc,
-            rsc_html: RscHtmlConfig {
-                pretty_print: mode == Mode::Development,
-                ..default_config.rsc_html
-            },
+            rsc_html: default_config.rsc_html,
             caching: CacheControlConfig {
                 server_components: Self::server_components_cache_control_for_mode(mode),
                 ..default_config.caching
@@ -491,12 +507,6 @@ impl Config {
                 == "true"
                 || rsc_html_cache_template_str == "1"
                 || rsc_html_cache_template_str.cow_to_lowercase() == "yes";
-        }
-
-        if let Ok(rsc_html_pretty_print_str) = env::var("RARI_RSC_HTML_PRETTY_PRINT") {
-            config.rsc_html.pretty_print = rsc_html_pretty_print_str.cow_to_lowercase() == "true"
-                || rsc_html_pretty_print_str == "1"
-                || rsc_html_pretty_print_str.cow_to_lowercase() == "yes";
         }
 
         if let Ok(loading_enabled_str) = env::var("RARI_LOADING_ENABLED") {
@@ -640,26 +650,49 @@ impl Config {
                 }
             }
 
-            if let Some(use_cache_data) = config_data.get("useCache")
-                && let Some(remote_value) = use_cache_data.get("remote")
-            {
-                match serde_json::from_value::<CacheLayerConfig>(remote_value.clone()) {
-                    Ok(mut layer) => {
-                        let trimmed_url = layer.url.as_deref().map(str::trim);
-                        let missing_url = trimmed_url.is_none_or(str::is_empty);
+            if let Some(use_cache_data) = config_data.get("useCache") {
+                if let Some(build_id) =
+                    use_cache_data.get("buildId").and_then(|value| value.as_str())
+                {
+                    config.use_cache.build_id = Some(build_id.to_string());
+                }
 
-                        if layer.handler == "redis" && missing_url {
-                            tracing::warn!(
-                                "Invalid useCache.remote: handler=redis requires a non-empty url. Ignoring remote cache config."
-                            );
-                        } else {
-                            // Store the trimmed URL
-                            layer.url = trimmed_url.map(String::from);
-                            config.use_cache.remote = Some(layer);
+                if let Some(remote_value) = use_cache_data.get("remote") {
+                    match serde_json::from_value::<CacheLayerConfig>(remote_value.clone()) {
+                        Ok(mut layer) => {
+                            let trimmed_url = layer.url.as_deref().map(str::trim);
+                            let missing_url = trimmed_url.is_none_or(str::is_empty);
+
+                            match layer.handler.as_str() {
+                                "test" if config.mode == Mode::Production => {
+                                    tracing::warn!(
+                                        "Invalid useCache.remote: handler='test' is for e2e tests only and is not allowed in production. Ignoring remote cache config."
+                                    );
+                                }
+                                "redis" | "redb" if missing_url => {
+                                    tracing::warn!(
+                                        "Invalid useCache.remote: handler={} requires a non-empty url. Ignoring remote cache config.",
+                                        layer.handler
+                                    );
+                                }
+                                "redis" | "redb" | "test" => {
+                                    layer.url = trimmed_url.map(String::from);
+                                    config.use_cache.remote = Some(layer);
+                                }
+                                _ => {
+                                    tracing::warn!(
+                                        "Invalid useCache.remote: handler='{}' is not supported (allowed: test, redis, redb). Ignoring remote cache config.",
+                                        layer.handler
+                                    );
+                                }
+                            }
                         }
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to parse useCache.remote: {}. Using default.", e);
+                        Err(e) => {
+                            tracing::warn!(
+                                "Failed to parse useCache.remote: {}. Using default.",
+                                e
+                            );
+                        }
                     }
                 }
             }

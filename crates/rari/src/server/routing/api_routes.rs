@@ -16,11 +16,14 @@ use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::fs;
-use tracing::error;
 
 use crate::{
+    rendering::layout::{component_dist_path, create_component_id},
     runtime::JsExecutionRuntime,
-    server::{middleware::request_context::RequestContext, routing::types::RouteSegment},
+    server::{
+        core::utils::http::extract_headers, middleware::request_context::RequestContext,
+        routing::types::RouteSegment,
+    },
 };
 
 fn parse_decoded_path_segments(path: &str) -> Vec<String> {
@@ -62,7 +65,6 @@ pub struct ApiRouteMatch {
 
 #[derive(Debug, Clone)]
 pub(crate) struct CompiledHandler {
-    module_id: String,
     code: String,
     last_modified: SystemTime,
 }
@@ -108,19 +110,7 @@ impl ApiRouteHandler {
     }
 
     pub fn invalidate_handler(&self, file_path: &str) {
-        self.handler_cache.remove(file_path);
-        // Handlers may be stored under component_id instead of file_path
-        // (e.g. "app/api/hello/route_6634b3ed" vs "api/hello/route.ts").
-        // Use a precise prefix match to avoid over-invalidating unrelated routes.
-        let route_prefix = format!(
-            "app/{}_",
-            file_path
-                .trim_end_matches(".tsx")
-                .trim_end_matches(".ts")
-                .trim_end_matches(".jsx")
-                .trim_end_matches(".js")
-        );
-        self.handler_cache.retain(|key, _| key != file_path && !key.starts_with(&route_prefix));
+        self.handler_cache.remove(&create_component_id(file_path));
     }
 
     pub fn get_supported_methods(&self, path: &str) -> Option<Vec<String>> {
@@ -241,11 +231,11 @@ impl ApiRouteHandler {
         is_development: bool,
     ) -> Result<CompiledHandler, RariError> {
         let file_path = &route.file_path;
-        let cache_key = route.component_id.as_deref().unwrap_or(file_path);
+        let cache_key = create_component_id(file_path);
 
-        if let Some(cached) = self.handler_cache.get(cache_key) {
+        if let Some(cached) = self.handler_cache.get(&cache_key) {
             if is_development {
-                let dist_path = Self::resolve_route_dist_path(route)?;
+                let dist_path = Self::resolve_route_dist_path(route);
                 if let Ok(metadata) = fs::metadata(&dist_path).await
                     && let Ok(modified) = metadata.modified()
                     && modified <= cached.last_modified
@@ -257,10 +247,10 @@ impl ApiRouteHandler {
             }
         }
 
-        let dist_path = Self::resolve_route_dist_path(route)?;
+        let dist_path = Self::resolve_route_dist_path(route);
 
-        if !dist_path.exists() {
-            error!(
+        if !fs::try_exists(&dist_path).await.unwrap_or(false) {
+            tracing::error!(
                 file_path = %file_path,
                 dist_path = %dist_path.display(),
                 route_path = %route.path,
@@ -273,7 +263,7 @@ impl ApiRouteHandler {
         }
 
         let code = fs::read_to_string(&dist_path).await.map_err(|e| {
-            error!(
+            tracing::error!(
                 file_path = %file_path,
                 dist_path = %dist_path.display(),
                 error = %e,
@@ -287,97 +277,15 @@ impl ApiRouteHandler {
             .and_then(|m| m.modified())
             .unwrap_or_else(|_| SystemTime::now());
 
-        let module_id = file_path
-            .trim_start_matches("api/")
-            .trim_end_matches(".ts")
-            .trim_end_matches(".tsx")
-            .trim_end_matches(".js")
-            .trim_end_matches(".jsx")
-            .cow_replace('/', "_");
+        let compiled = CompiledHandler { code, last_modified };
 
-        let compiled = CompiledHandler {
-            module_id: module_id.into_owned(),
-            code: code.clone(),
-            last_modified,
-        };
-
-        self.handler_cache.insert(cache_key.to_string(), compiled.clone());
+        self.handler_cache.insert(cache_key, compiled.clone());
 
         Ok(compiled)
     }
 
-    fn resolve_route_dist_path(route: &ApiRouteEntry) -> Result<PathBuf, RariError> {
-        if let Some(component_id) = &route.component_id {
-            return Ok(Path::new("dist").join("server").join(format!("{component_id}.js")));
-        }
-
-        Self::resolve_dist_path(&route.file_path)
-    }
-
-    #[expect(clippy::unnecessary_wraps, reason = "Result return type maintains API consistency")]
-    fn resolve_dist_path(file_path: &str) -> Result<PathBuf, RariError> {
-        let mut normalized_path = String::new();
-        let mut chars = file_path.chars().peekable();
-
-        while let Some(ch) = chars.next() {
-            if ch == '[' {
-                if chars.peek() == Some(&'[') {
-                    chars.next();
-
-                    if chars.peek() == Some(&'.') {
-                        chars.next();
-                        if chars.peek() == Some(&'.') {
-                            chars.next();
-                            if chars.peek() == Some(&'.') {
-                                chars.next();
-                                normalized_path.push_str("_____");
-
-                                while let Some(ch) = chars.next() {
-                                    if ch == ']' && chars.peek() == Some(&']') {
-                                        chars.next();
-                                        normalized_path.push_str("__");
-                                        break;
-                                    }
-                                    normalized_path.push(ch);
-                                }
-                            }
-                        }
-                    }
-                } else if chars.peek() == Some(&'.') {
-                    chars.next();
-                    if chars.peek() == Some(&'.') {
-                        chars.next();
-                        if chars.peek() == Some(&'.') {
-                            chars.next();
-                            normalized_path.push_str("____");
-                            for ch in chars.by_ref() {
-                                if ch == ']' {
-                                    normalized_path.push('_');
-                                    break;
-                                }
-                                normalized_path.push(ch);
-                            }
-                        }
-                    }
-                } else {
-                    normalized_path.push('_');
-                    for ch in chars.by_ref() {
-                        if ch == ']' {
-                            normalized_path.push('_');
-                            break;
-                        }
-                        normalized_path.push(ch);
-                    }
-                }
-            } else {
-                normalized_path.push(ch);
-            }
-        }
-
-        let dist_path =
-            Path::new("dist").join("server").join("app").join(normalized_path).with_extension("js");
-
-        Ok(dist_path)
+    fn resolve_route_dist_path(route: &ApiRouteEntry) -> PathBuf {
+        component_dist_path(Path::new("dist/server"), &route.file_path)
     }
 
     #[expect(clippy::missing_errors_doc, clippy::too_many_lines)]
@@ -390,7 +298,7 @@ impl ApiRouteHandler {
         const MAX_API_BODY_SIZE: usize = 10 * 1024 * 1024;
 
         let handler = self.load_handler(&route_match.route, is_development).await.map_err(|e| {
-            error!(
+            tracing::error!(
                 route_path = %route_match.route.path,
                 method = %route_match.method,
                 error = %e,
@@ -402,7 +310,7 @@ impl ApiRouteHandler {
         let (parts, body) = request.into_parts();
 
         let body_bytes = body::to_bytes(body, MAX_API_BODY_SIZE).await.map_err(|e| {
-            error!(
+            tracing::error!(
                 route_path = %route_match.route.path,
                 method = %route_match.method,
                 error = %e,
@@ -421,12 +329,15 @@ impl ApiRouteHandler {
             &route_match.params,
         )?;
 
-        let request_context = Arc::new(RequestContext::new(route_match.route.path.clone()));
+        let request_context = Arc::new(
+            RequestContext::new(route_match.route.path.clone())
+                .with_http_headers(extract_headers(&parts.headers)),
+        );
 
         self.runtime
             .execute_with_request_context(request_context, async {
-                let dist_path = Self::resolve_route_dist_path(&route_match.route)?;
-                let canonical_path = dist_path.canonicalize().map_err(|e| {
+                let dist_path = Self::resolve_route_dist_path(&route_match.route);
+                let canonical_path = fs::canonicalize(&dist_path).await.map_err(|e| {
                     RariError::io(format!(
                         "Failed to canonicalize API route path {}: {e}",
                         dist_path.display()
@@ -441,13 +352,15 @@ impl ApiRouteHandler {
                     })?
                     .to_string();
 
+                let component_id = create_component_id(&route_match.route.file_path);
+
                 if let Err(e) =
                     self.runtime.add_module_to_loader(&module_specifier, handler.code.clone()).await
                 {
-                    error!(
+                    tracing::error!(
                         route_path = %route_match.route.path,
                         method = %route_match.method,
-                        module_id = %handler.module_id,
+                        component_id = %component_id,
                         error = %e,
                         "Failed to add API route module to loader"
                     );
@@ -456,26 +369,8 @@ impl ApiRouteHandler {
                     )));
                 }
 
-                let component_id = route_match.route.component_id.clone().unwrap_or_else(|| {
-                    dist_path
-                        .strip_prefix(Path::new("dist").join("server"))
-                        .map(|p| {
-                            p.with_extension("")
-                                .to_string_lossy()
-                                .cow_replace('\\', "/")
-                                .into_owned()
-                        })
-                        .unwrap_or_else(|_| {
-                            dist_path
-                                .with_extension("")
-                                .to_string_lossy()
-                                .cow_replace('\\', "/")
-                                .into_owned()
-                        })
-                });
-
                 let module_id = self.runtime.load_es_module(&component_id).await.map_err(|e| {
-                    error!(
+                    tracing::error!(
                         route_path = %route_match.route.path,
                         method = %route_match.method,
                         component_id = %component_id,
@@ -486,10 +381,10 @@ impl ApiRouteHandler {
                 })?;
 
                 if let Err(e) = self.runtime.evaluate_module(module_id).await {
-                    error!(
+                    tracing::error!(
                         route_path = %route_match.route.path,
                         method = %route_match.method,
-                        module_id = module_id,
+                        component_id = %component_id,
                         error = %e,
                         "Failed to evaluate API route module"
                     );
@@ -504,10 +399,10 @@ impl ApiRouteHandler {
                     )
                     .await
                     .map_err(|e| {
-                        error!(
+                        tracing::error!(
                             route_path = %route_match.route.path,
                             method = %route_match.method,
-                            module_id = %handler.module_id,
+                            component_id = %component_id,
                             error = %e,
                             "Handler execution failed"
                         );
@@ -515,7 +410,7 @@ impl ApiRouteHandler {
                     })?;
 
                 let response = Self::create_response(&result).map_err(|e| {
-                    error!(
+                    tracing::error!(
                         route_path = %route_match.route.path,
                         method = %route_match.method,
                         error = %e,

@@ -55,13 +55,9 @@ export function transformUseCacheModule(
   if (!hasUseCacheFunction(code))
     return null
 
-  console.error(`[use-cache] found 'use cache' directive in ${id}`)
-
   const native = getAddon()
-  if (!native) {
-    console.error(`[use-cache] NO ADDON — skipping transform for ${id}`)
+  if (!native)
     return null
-  }
 
   try {
     const result = transformUseCache(code, {
@@ -70,22 +66,18 @@ export function transformUseCacheModule(
       cacheKinds: options.cacheKinds ?? ['default'],
     })
 
-    if (result.code === code) {
-      console.error(`[use-cache] addon returned unchanged code for ${id}`)
+    if (result.code === code)
       return null
-    }
-
-    console.error(`[use-cache] transformed ${id} (needsCacheWrapper=${result.needsCacheWrapper}, needsRegisterRef=${result.needsRegisterRef})`)
 
     const imports = []
     if (result.needsReactCache)
       imports.push(`import { cache as $$reactCache__ } from 'react'`)
 
     if (result.needsCacheWrapper)
-      imports.push(`import { $$cache__, encodeBoundArgs } from '@rari/use-cache/runtime/cache-wrapper'`)
+      imports.push(`import { $$cache__ } from '@rari/use-cache/runtime/cache-wrapper'`)
 
     if (result.needsRegisterRef)
-      imports.push(`import { registerServerReference } from 'rari/runtime/react-server-dom-shim'`)
+      imports.push(`import { registerServerReference } from 'react-server-dom-rari/server'`)
 
     const prologueLines = extractPrologueLines(result.code)
     const importBlock = imports.length ? `${imports.join(';\n')};\n` : ''
@@ -99,9 +91,9 @@ export function transformUseCacheModule(
     return `${importBlock}${result.code}`
   }
   catch (err) {
-    console.error(`[use-cache] addon threw for ${id}:`, err)
     throw new Error(
       `Failed to transform 'use cache' directive in ${id}: ${err instanceof Error ? err.message : String(err)}`,
+      { cause: err },
     )
   }
 }

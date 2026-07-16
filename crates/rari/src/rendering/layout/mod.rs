@@ -1,5 +1,4 @@
 mod core;
-mod error_messages;
 mod route_composer;
 pub mod types;
 mod utils;
@@ -8,13 +7,13 @@ pub use core::{LayoutHtmlCache, LayoutRenderer};
 
 pub use route_composer::{LayoutInfo, RouteComposer};
 pub use types::*;
-pub(crate) use utils::component_dist_path;
-pub use utils::create_layout_context;
+pub(crate) use utils::{component_dist_path, create_component_id, drain_chunked_stream};
+pub use utils::{create_layout_context, sort_flight_protocol};
 
 #[cfg(test)]
 #[expect(clippy::unwrap_used)]
 mod tests {
-    use std::sync::Arc;
+    use std::{path::Path, sync::Arc};
 
     use rustc_hash::FxHashMap;
     use tokio::sync::Mutex;
@@ -35,6 +34,16 @@ mod tests {
         assert_eq!(utils::get_component_id("app/layout.tsx"), "Layout");
         assert_eq!(utils::get_component_id("app/loading.tsx"), "Loading");
         assert_eq!(utils::get_component_id("app/error.tsx"), "Error");
+    }
+
+    #[test]
+    fn test_component_dist_path_uses_hashed_id_from_file_path() {
+        let base = Path::new("/dist/server");
+        let path = utils::component_dist_path(base, "blog/_slug_/page.tsx");
+        assert_eq!(
+            path,
+            base.join(format!("{}.js", utils::create_component_id("blog/_slug_/page.tsx")))
+        );
     }
 
     #[test]
@@ -63,6 +72,7 @@ mod tests {
             search_params: search_params.clone(),
             headers: FxHashMap::default(),
             pathname: "/test".to_string(),
+            template_navigation_id: None,
             metadata: None,
         };
 
@@ -89,62 +99,6 @@ mod tests {
         let props = utils::create_page_props(&route_match, &context).unwrap();
         assert!(props.get("params").is_some());
         assert!(props.get("searchParams").is_some());
-    }
-
-    #[test]
-    fn test_wrapped_html_error_message_contains_key_info() {
-        let route_match = AppRouteMatch {
-            route: AppRouteEntry {
-                path: "/test".to_string(),
-                file_path: "app/test/page.tsx".to_string(),
-                component_id: None,
-                css: vec![],
-                segments: vec![],
-                params: vec![],
-                is_dynamic: false,
-                static_params: None,
-            },
-            params: FxHashMap::default(),
-            layouts: vec![LayoutEntry {
-                path: "/".to_string(),
-                file_path: "app/layout.tsx".to_string(),
-                component_id: None,
-                css: vec![],
-                parent_path: None,
-                additional_paths: None,
-                is_root: true,
-            }],
-            loading: None,
-            error: None,
-            not_found: None,
-            templates: vec![],
-            pathname: "/test".to_string(),
-        };
-
-        let error_msg =
-            error_messages::create_wrapped_html_error_message(&route_match, Some("app/layout.tsx"));
-
-        assert!(error_msg.contains("Hydration Mismatch"));
-        assert!(error_msg.contains("app/layout.tsx"));
-        assert!(error_msg.contains("/test"));
-        assert!(error_msg.contains("HOW TO FIX"));
-        assert!(error_msg.contains("CORRECT STRUCTURE"));
-        assert!(error_msg.contains("INCORRECT STRUCTURE"));
-        assert!(error_msg.contains("Step 1"));
-        assert!(error_msg.contains("ROOT"));
-    }
-
-    #[test]
-    fn test_empty_rsc_error_message_contains_key_info() {
-        let error_msg = error_messages::create_empty_rsc_error_message();
-
-        assert!(error_msg.contains("Empty Content"));
-        assert!(error_msg.contains("COMMON CAUSES"));
-        assert!(error_msg.contains("HOW TO FIX"));
-        assert!(error_msg.contains("VALID COMPONENT EXAMPLES"));
-        assert!(error_msg.contains("export default"));
-        assert!(error_msg.contains("Step 1"));
-        assert!(error_msg.contains("DEBUGGING CHECKLIST"));
     }
 
     #[test]
@@ -178,6 +132,7 @@ mod tests {
             search_params: FxHashMap::default(),
             headers: FxHashMap::default(),
             pathname: "/test".to_string(),
+            template_navigation_id: None,
             metadata: None,
         };
 
@@ -222,6 +177,7 @@ mod tests {
             search_params: FxHashMap::default(),
             headers: FxHashMap::default(),
             pathname: "/test".to_string(),
+            template_navigation_id: None,
             metadata: None,
         };
 
@@ -239,75 +195,6 @@ mod tests {
         assert!(
             script.contains("const isAsync = PageComponent.constructor.name === 'AsyncFunction'")
         );
-    }
-
-    #[test]
-    fn test_layout_structure_new() {
-        let layout_structure = LayoutStructure::new();
-        assert!(!layout_structure.has_navigation);
-        assert!(layout_structure.navigation_position.is_none());
-        assert!(layout_structure.content_position.is_none());
-        assert_eq!(layout_structure.suspense_boundaries.len(), 0);
-    }
-
-    #[test]
-    fn test_layout_structure_is_valid_empty() {
-        let layout_structure = LayoutStructure::new();
-        assert!(layout_structure.is_valid());
-    }
-
-    #[test]
-    fn test_layout_structure_is_valid_navigation_before_content() {
-        let layout_structure = LayoutStructure {
-            has_navigation: true,
-            navigation_position: Some(0),
-            content_position: Some(1),
-            suspense_boundaries: Vec::new(),
-        };
-        assert!(layout_structure.is_valid());
-    }
-
-    #[test]
-    fn test_layout_structure_is_invalid_navigation_after_content() {
-        let layout_structure = LayoutStructure {
-            has_navigation: true,
-            navigation_position: Some(1),
-            content_position: Some(0),
-            suspense_boundaries: Vec::new(),
-        };
-        assert!(!layout_structure.is_valid());
-    }
-
-    #[test]
-    fn test_layout_structure_is_invalid_boundary_outside_content() {
-        let layout_structure = LayoutStructure {
-            has_navigation: true,
-            navigation_position: Some(0),
-            content_position: Some(1),
-            suspense_boundaries: vec![BoundaryPosition {
-                boundary_id: "test_boundary".to_string(),
-                parent_path: vec![0],
-                is_in_content_area: false,
-                dom_path: vec![0],
-            }],
-        };
-        assert!(!layout_structure.is_valid());
-    }
-
-    #[test]
-    fn test_layout_structure_is_valid_boundary_in_content() {
-        let layout_structure = LayoutStructure {
-            has_navigation: true,
-            navigation_position: Some(0),
-            content_position: Some(1),
-            suspense_boundaries: vec![BoundaryPosition {
-                boundary_id: "test_boundary".to_string(),
-                parent_path: vec![1, 0],
-                is_in_content_area: true,
-                dom_path: vec![1, 1, 0],
-            }],
-        };
-        assert!(layout_structure.is_valid());
     }
 
     #[test]
@@ -349,6 +236,7 @@ mod tests {
             search_params: FxHashMap::default(),
             headers: FxHashMap::default(),
             pathname: "/test".to_string(),
+            template_navigation_id: None,
             metadata: None,
         };
 
@@ -392,6 +280,7 @@ mod tests {
             search_params: FxHashMap::default(),
             headers: FxHashMap::default(),
             pathname: "/test".to_string(),
+            template_navigation_id: None,
             metadata: None,
         };
 
@@ -444,6 +333,7 @@ mod tests {
             search_params: FxHashMap::default(),
             headers: FxHashMap::default(),
             pathname: "/test".to_string(),
+            template_navigation_id: None,
             metadata: None,
         };
 
@@ -504,6 +394,7 @@ mod tests {
             search_params: FxHashMap::default(),
             headers: FxHashMap::default(),
             pathname: "/test".to_string(),
+            template_navigation_id: None,
             metadata: None,
         };
 
@@ -555,6 +446,7 @@ mod tests {
             search_params: FxHashMap::default(),
             headers: FxHashMap::default(),
             pathname: "/test".to_string(),
+            template_navigation_id: None,
             metadata: None,
         };
 

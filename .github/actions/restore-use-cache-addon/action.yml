@@ -1,0 +1,16 @@
+name: Restore use-cache addon
+description: Restore the use-cache native addon from a Namespace workflow artifact
+
+inputs:
+  platform:
+    description: Platform package suffix (linux-x64 or win32-x64)
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Download use-cache addon
+      uses: actions/download-artifact@v4
+      with:
+        name: use-cache-${{ inputs.platform }}
+        path: packages/use-cache-${{ inputs.platform }}
