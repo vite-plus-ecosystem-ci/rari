@@ -25,7 +25,7 @@ concurrency:
 jobs:
   changes:
     if: github.event_name != 'push' || !startsWith(github.ref, 'refs/tags/v')
-    runs-on: namespace-profile-rari-linux-amd64
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       pull-requests: read
@@ -38,12 +38,12 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         if: runner.os == 'Windows'
         with:
-          fetch-depth: '0'
+          fetch-depth: "0"
 
-      - uses: namespacelabs/nscloud-checkout-action@445c25d7009680597d73eb03c4e1cd5be522ed73 # v9.0.0
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         if: runner.os != 'Windows'
         with:
-          fetch-depth: '0'
+          fetch-depth: "0"
 
       - uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4.0.2
         id: filter
@@ -87,7 +87,7 @@ jobs:
     name: Build V8 snapshot
     needs: changes
     if: needs.changes.outputs.snapshot == 'true'
-    runs-on: namespace-profile-rari-linux-amd64
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
       actions: write
@@ -96,7 +96,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         if: runner.os == 'Windows'
 
-      - uses: namespacelabs/nscloud-checkout-action@445c25d7009680597d73eb03c4e1cd5be522ed73 # v9.0.0
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         if: runner.os != 'Windows'
 
       - uses: ./.github/actions/setup-namespace-cache
@@ -125,7 +125,7 @@ jobs:
         run: just ci-generate-snapshot
 
       - name: Upload snapshot
-        uses: namespace-actions/upload-artifact@f6ccaacc655aec41b93af180d1d7eef21af862d2 # v1.0.3
+        uses: actions/upload-artifact@v4
         with:
           name: v8-snapshot
           path: |
@@ -142,7 +142,7 @@ jobs:
     if: |
       (always() && !cancelled()) &&
       needs.changes.outputs.rust == 'true'
-    runs-on: namespace-profile-rari-linux-amd64
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       actions: write
@@ -151,7 +151,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         if: runner.os == 'Windows'
 
-      - uses: namespacelabs/nscloud-checkout-action@445c25d7009680597d73eb03c4e1cd5be522ed73 # v9.0.0
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         if: runner.os != 'Windows'
 
       - uses: ./.github/actions/setup-namespace-cache
@@ -176,7 +176,7 @@ jobs:
 
       - name: Download snapshot
         if: needs.build-snapshot.result == 'success'
-        uses: namespace-actions/download-artifact@7cbad919e4b0e09f17e9d6311a444ff002992b5b # v2.0.1
+        uses: actions/download-artifact@v4
         with:
           name: v8-snapshot
           path: crates/rari/snapshots
@@ -206,14 +206,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [namespace-profile-rari-linux-amd64, namespace-profile-rari-windows-amd64]
+        os: [ubuntu-24.04, windows-2025]
         exclude:
-          - os: ${{ github.event_name == 'merge_group' && 'namespace-profile-rari-windows-amd64' || '' }}
+          - os: ${{ github.event_name == 'merge_group' && 'windows-2025' || '' }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         if: runner.os == 'Windows'
 
-      - uses: namespacelabs/nscloud-checkout-action@445c25d7009680597d73eb03c4e1cd5be522ed73 # v9.0.0
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         if: runner.os != 'Windows'
 
       - uses: ./.github/actions/setup-platform-cache
@@ -222,8 +222,8 @@ jobs:
             rust
             pnpm
             apt
-          rust: 'true'
-          pnpm: 'true'
+          rust: "true"
+          pnpm: "true"
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
@@ -241,7 +241,7 @@ jobs:
 
       - name: Download snapshot
         if: needs.build-snapshot.result == 'success' && runner.os == 'Linux'
-        uses: namespace-actions/download-artifact@7cbad919e4b0e09f17e9d6311a444ff002992b5b # v2.0.1
+        uses: actions/download-artifact@v4
         with:
           name: v8-snapshot
           path: crates/rari/snapshots
@@ -272,7 +272,7 @@ jobs:
 
       - name: Upload binary (Linux)
         if: runner.os == 'Linux'
-        uses: namespace-actions/upload-artifact@f6ccaacc655aec41b93af180d1d7eef21af862d2 # v1.0.3
+        uses: actions/upload-artifact@v4
         with:
           name: rari-binary-linux
           path: target/debug/rari
@@ -281,7 +281,7 @@ jobs:
 
       - name: Upload binary (Windows)
         if: runner.os == 'Windows'
-        uses: namespace-actions/upload-artifact@f6ccaacc655aec41b93af180d1d7eef21af862d2 # v1.0.3
+        uses: actions/upload-artifact@v4
         with:
           name: rari-binary-windows
           path: target/debug/rari.exe
@@ -295,13 +295,13 @@ jobs:
     name: Build rari_use_cache.node (linux-x64)
     needs: [changes]
     if: needs.changes.outputs.use_cache_crate == 'true' || needs.changes.outputs.src == 'true'
-    runs-on: namespace-profile-rari-linux-amd64
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
       actions: write
       contents: read
     steps:
-      - uses: namespacelabs/nscloud-checkout-action@445c25d7009680597d73eb03c4e1cd5be522ed73 # v9.0.0
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - uses: ./.github/actions/setup-platform-cache
         with:
@@ -309,9 +309,9 @@ jobs:
             rust
             pnpm
             apt
-          rust: 'true'
+          rust: "true"
           rust-workspaces: crates/rari_use_cache
-          pnpm: 'true'
+          pnpm: "true"
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
@@ -320,13 +320,13 @@ jobs:
 
       - uses: ./.github/actions/setup-rust-build-deps
         with:
-          fontconfig: 'false'
+          fontconfig: "false"
 
       - uses: ./.github/actions/setup-pnpm
         with:
           node-version: 22.18.0
-          cache: 'false'
-          setup-toolchain: 'false'
+          cache: "false"
+          setup-toolchain: "false"
 
       - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4.0.0
 
@@ -334,7 +334,7 @@ jobs:
         run: just ci-prepare-use-cache-addon
 
       - name: Upload addon
-        uses: namespace-actions/upload-artifact@f6ccaacc655aec41b93af180d1d7eef21af862d2 # v1.0.3
+        uses: actions/upload-artifact@v4
         with:
           name: use-cache-linux-x64
           path: |
@@ -348,7 +348,7 @@ jobs:
     name: Build rari_use_cache.node (win32-x64)
     needs: [changes]
     if: (needs.changes.outputs.use_cache_crate == 'true' || needs.changes.outputs.src == 'true') && github.event_name != 'merge_group'
-    runs-on: namespace-profile-rari-windows-amd64
+    runs-on: windows-2025
     timeout-minutes: 20
     permissions:
       actions: write
@@ -358,9 +358,9 @@ jobs:
 
       - uses: ./.github/actions/setup-platform-cache
         with:
-          rust: 'true'
+          rust: "true"
           rust-workspaces: crates/rari_use_cache
-          pnpm: 'true'
+          pnpm: "true"
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
@@ -369,13 +369,13 @@ jobs:
 
       - uses: ./.github/actions/setup-rust-build-deps
         with:
-          fontconfig: 'false'
+          fontconfig: "false"
 
       - uses: ./.github/actions/setup-pnpm
         with:
           node-version: 22.18.0
-          cache: 'false'
-          setup-toolchain: 'false'
+          cache: "false"
+          setup-toolchain: "false"
 
       - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4.0.0
 
@@ -383,7 +383,7 @@ jobs:
         run: just ci-prepare-use-cache-addon
 
       - name: Upload addon
-        uses: namespace-actions/upload-artifact@f6ccaacc655aec41b93af180d1d7eef21af862d2 # v1.0.3
+        uses: actions/upload-artifact@v4
         with:
           name: use-cache-win32-x64
           path: |
@@ -398,7 +398,7 @@ jobs:
     if: |
       (always() && !cancelled()) &&
       (needs.changes.outputs.src == 'true' || needs.changes.outputs.rust == 'true')
-    runs-on: namespace-profile-rari-linux-amd64
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       actions: write
@@ -407,7 +407,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         if: runner.os == 'Windows'
 
-      - uses: namespacelabs/nscloud-checkout-action@445c25d7009680597d73eb03c4e1cd5be522ed73 # v9.0.0
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         if: runner.os != 'Windows'
 
       - uses: ./.github/actions/setup-namespace-cache
@@ -417,8 +417,8 @@ jobs:
       - uses: ./.github/actions/setup-pnpm
         with:
           node-version: 22.18.0
-          cache: 'false'
-          setup-toolchain: 'false'
+          cache: "false"
+          setup-toolchain: "false"
 
       - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4.0.0
 
@@ -437,7 +437,7 @@ jobs:
         run: just ci-verify-dist
 
       - name: Upload dist artifact
-        uses: namespace-actions/upload-artifact@f6ccaacc655aec41b93af180d1d7eef21af862d2 # v1.0.3
+        uses: actions/upload-artifact@v4
         with:
           if-no-files-found: error
           retention-days: 3
@@ -457,7 +457,7 @@ jobs:
     if: |
       (always() && !cancelled()) &&
       (needs.changes.outputs.src == 'true' || needs.changes.outputs.rust == 'true')
-    runs-on: namespace-profile-rari-linux-amd64
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       actions: write
@@ -466,7 +466,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         if: runner.os == 'Windows'
 
-      - uses: namespacelabs/nscloud-checkout-action@445c25d7009680597d73eb03c4e1cd5be522ed73 # v9.0.0
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         if: runner.os != 'Windows'
 
       - uses: ./.github/actions/setup-namespace-cache
@@ -476,8 +476,8 @@ jobs:
       - uses: ./.github/actions/setup-pnpm
         with:
           node-version: 22.18.0
-          cache: 'false'
-          setup-toolchain: 'false'
+          cache: "false"
+          setup-toolchain: "false"
 
       - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4.0.0
 
@@ -515,16 +515,16 @@ jobs:
     strategy:
       fail-fast: ${{ github.event_name == 'merge_group' }}
       matrix:
-        os: [namespace-profile-rari-linux-amd64, namespace-profile-rari-windows-amd64]
+        os: [ubuntu-24.04, windows-2025]
         node: [22.18.0]
         exclude:
-          - os: ${{ github.event_name == 'merge_group' && 'namespace-profile-rari-windows-amd64' || '' }}
+          - os: ${{ github.event_name == 'merge_group' && 'windows-2025' || '' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         if: runner.os == 'Windows'
 
-      - uses: namespacelabs/nscloud-checkout-action@445c25d7009680597d73eb03c4e1cd5be522ed73 # v9.0.0
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         if: runner.os != 'Windows'
 
       - uses: ./.github/actions/setup-platform-cache
@@ -533,12 +533,12 @@ jobs:
             playwright
             pnpm
             apt
-          playwright: 'true'
-          pnpm: 'true'
+          playwright: "true"
+          pnpm: "true"
           node-version: ${{ matrix.node }}
 
       - name: Restore dist cache
-        uses: namespace-actions/download-artifact@7cbad919e4b0e09f17e9d6311a444ff002992b5b # v2.0.1
+        uses: actions/download-artifact@v4
         with:
           name: dist
           path: packages
@@ -560,14 +560,14 @@ jobs:
 
       - name: Download rari binary (Linux)
         if: runner.os == 'Linux'
-        uses: namespace-actions/download-artifact@7cbad919e4b0e09f17e9d6311a444ff002992b5b # v2.0.1
+        uses: actions/download-artifact@v4
         with:
           name: rari-binary-linux
           path: packages/rari-linux-x64/bin
 
       - name: Download rari binary (Windows)
         if: runner.os == 'Windows'
-        uses: namespace-actions/download-artifact@7cbad919e4b0e09f17e9d6311a444ff002992b5b # v2.0.1
+        uses: actions/download-artifact@v4
         with:
           name: rari-binary-windows
           path: packages/rari-win32-x64/bin
@@ -594,7 +594,7 @@ jobs:
 
       - name: Upload Playwright report
         if: always()
-        uses: namespace-actions/upload-artifact@f6ccaacc655aec41b93af180d1d7eef21af862d2 # v1.0.3
+        uses: actions/upload-artifact@v4
         with:
           name: playwright-report-${{ matrix.os }}
           path: |
@@ -608,7 +608,7 @@ jobs:
 
   ci-ok:
     if: always()
-    runs-on: namespace-profile-rari-linux-amd64
+    runs-on: ubuntu-24.04
     needs:
       - changes
       - build-snapshot

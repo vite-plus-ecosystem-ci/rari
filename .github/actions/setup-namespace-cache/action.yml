@@ -21,8 +21,3 @@ runs:
       with:
         node-version: ${{ inputs.node-version }}
         package-manager-cache: false
-
-    - name: Configure Namespace cache
-      uses: namespacelabs/nscloud-cache-action@58bf6e08898e88803c098e2b522668541cd3b2e3 # v1.6.0
-      with:
-        cache: ${{ inputs.cache }}
