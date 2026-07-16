@@ -14,8 +14,29 @@ minimumReleaseAgeExclude:
   - rari-win32-arm64@0.15.4
   - rari-win32-x64@0.15.4
   - rari@0.15.4
+  - '@voidzero-dev/vite-plus-core@0.0.0-commit.bb0445bf5599a389c324442a3f3f8a8a5db5d83d'
+  - '@voidzero-dev/vite-plus-darwin-arm64@0.0.0-commit.bb0445bf5599a389c324442a3f3f8a8a5db5d83d'
+  - '@voidzero-dev/vite-plus-darwin-x64@0.0.0-commit.bb0445bf5599a389c324442a3f3f8a8a5db5d83d'
+  - '@voidzero-dev/vite-plus-linux-arm64-gnu@0.0.0-commit.bb0445bf5599a389c324442a3f3f8a8a5db5d83d'
+  - '@voidzero-dev/vite-plus-linux-arm64-musl@0.0.0-commit.bb0445bf5599a389c324442a3f3f8a8a5db5d83d'
+  - '@voidzero-dev/vite-plus-linux-x64-gnu@0.0.0-commit.bb0445bf5599a389c324442a3f3f8a8a5db5d83d'
+  - '@voidzero-dev/vite-plus-linux-x64-musl@0.0.0-commit.bb0445bf5599a389c324442a3f3f8a8a5db5d83d'
+  - '@voidzero-dev/vite-plus-win32-arm64-msvc@0.0.0-commit.bb0445bf5599a389c324442a3f3f8a8a5db5d83d'
+  - '@voidzero-dev/vite-plus-win32-x64-msvc@0.0.0-commit.bb0445bf5599a389c324442a3f3f8a8a5db5d83d'
+  - vite-plus@0.0.0-commit.bb0445bf5599a389c324442a3f3f8a8a5db5d83d
 shellEmulator: true
 trustPolicy: no-downgrade
+trustPolicyExclude:
+  - 'vite-plus@0.0.0-commit.bb0445bf5599a389c324442a3f3f8a8a5db5d83d'
+  - '@voidzero-dev/vite-plus-core@0.0.0-commit.bb0445bf5599a389c324442a3f3f8a8a5db5d83d'
+  - '@voidzero-dev/vite-plus-darwin-arm64@0.0.0-commit.bb0445bf5599a389c324442a3f3f8a8a5db5d83d'
+  - '@voidzero-dev/vite-plus-darwin-x64@0.0.0-commit.bb0445bf5599a389c324442a3f3f8a8a5db5d83d'
+  - '@voidzero-dev/vite-plus-linux-arm64-gnu@0.0.0-commit.bb0445bf5599a389c324442a3f3f8a8a5db5d83d'
+  - '@voidzero-dev/vite-plus-linux-arm64-musl@0.0.0-commit.bb0445bf5599a389c324442a3f3f8a8a5db5d83d'
+  - '@voidzero-dev/vite-plus-linux-x64-gnu@0.0.0-commit.bb0445bf5599a389c324442a3f3f8a8a5db5d83d'
+  - '@voidzero-dev/vite-plus-linux-x64-musl@0.0.0-commit.bb0445bf5599a389c324442a3f3f8a8a5db5d83d'
+  - '@voidzero-dev/vite-plus-win32-arm64-msvc@0.0.0-commit.bb0445bf5599a389c324442a3f3f8a8a5db5d83d'
+  - '@voidzero-dev/vite-plus-win32-x64-msvc@0.0.0-commit.bb0445bf5599a389c324442a3f3f8a8a5db5d83d'
 packages:
   - examples/*
   - packages/*
@@ -29,8 +50,10 @@ catalogs:
     '@napi-rs/cli': ^3.7.3
     lightningcss: ^1.32.0
     rolldown: ^1.1.5
-    vite: ^8.1.4
-    vite-plus: ^0.2.4
+    vite: npm:@voidzero-dev/vite-plus-core@0.0.0-commit.bb0445bf5599a389c324442a3f3f8a8a5db5d83d
+    vite-plus: 0.0.0-commit.bb0445bf5599a389c324442a3f3f8a8a5db5d83d
+    vitest: 4.1.10
+    '@vitest/coverage-v8': 4.1.10
   cli:
     '@clack/prompts': ^1.7.0
   default:
@@ -65,7 +88,7 @@ catalogs:
     tailwindcss: ^4.3.2
   testing:
     '@playwright/test': ^1.61.1
-    '@vitest/coverage-v8': ^4.1.10
+    '@vitest/coverage-v8': 4.1.10
   typescript:
     '@types/node': ^26.1.1
     # https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/#running-side-by-side-with-typescript-6.0
@@ -73,3 +96,13 @@ catalogs:
     typescript-7: npm:typescript@^7.0.2
 allowBuilds:
   core-js: true
+overrides:
+  vite: catalog:build
+  vitest: catalog:build
+peerDependencyRules:
+  allowAny:
+    - vite
+    - vitest
+  allowedVersions:
+    vite: '*'
+    vitest: '*'
