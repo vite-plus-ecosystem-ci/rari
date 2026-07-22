@@ -14,8 +14,10 @@ catalogs:
     '@napi-rs/cli': ^3.7.3
     lightningcss: ^1.33.0
     rolldown: ^1.2.0
-    vite: ^8.1.5
-    vite-plus: ^0.2.5
+    vite: npm:@voidzero-dev/vite-plus-core@0.0.0-commit.9855245a469b178066c25a5d45c971c130565d89
+    vite-plus: 0.0.0-commit.9855245a469b178066c25a5d45c971c130565d89
+    vitest: 4.1.10
+    '@vitest/coverage-v8': 4.1.10
   cli:
     '@clack/prompts': ^1.7.0
   default:
@@ -50,7 +52,7 @@ catalogs:
     tailwindcss: ^4.3.3
   testing:
     '@playwright/test': ^1.61.1
-    '@vitest/coverage-v8': ^4.1.10
+    '@vitest/coverage-v8': 4.1.10
   typescript:
     '@types/node': ^26.1.1
     # https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/#running-side-by-side-with-typescript-6.0
@@ -58,3 +60,13 @@ catalogs:
     typescript-7: npm:typescript@^7.0.2
 allowBuilds:
   core-js: true
+overrides:
+  vite: catalog:build
+  vitest: catalog:build
+peerDependencyRules:
+  allowAny:
+    - vite
+    - vitest
+  allowedVersions:
+    vite: '*'
+    vitest: '*'
