@@ -1,0 +1,39 @@
+.npmrc
+  s_61e825252de171::t_cd5586b260e0b6 1-2
+examples/app-router-example/vite.config.ts
+  s_61e825252de171::t_c245fdfb5026fd 4
+package.json
+  s_61e825252de171::t_f7102403f8488a 35-37
+packages/create-rari-app/package.json
+  s_61e825252de171::t_722486d93a0091 57
+packages/deploy/package.json
+  s_61e825252de171::t_af490dbc4adf6d 35
+packages/logger/package.json
+  s_61e825252de171::t_36556c3649c8c4 26
+packages/rari/package.json
+  s_61e825252de171::t_87e1aefa4c62a4 172
+packages/use-cache/package.json
+  s_61e825252de171::t_94cbc14cfa8354 77
+pnpm-workspace.yaml
+  s_61e825252de171::t_b6d95d575d3ade 17-20,55,63-72
+test/fixtures/app/vite.config.ts
+  s_61e825252de171::t_753a2a7c5f8d65 4
+web/package.json
+  s_61e825252de171::t_6a8ba4b13efeb7 43
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "58b8924c16d0cd8251034632c62800655dd51039",
+  "prompts": {},
+  "sessions": {
+    "s_61e825252de171": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_075d2910cffec5F5nSxiexsTBV",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "wan9chi <dk4rest@gmail.com>"
+    }
+  }
+}
