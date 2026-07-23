@@ -2,6 +2,16 @@ use axum::http::{HeaderMap, HeaderValue};
 use cow_utils::CowUtils;
 use rustc_hash::{FxHashMap, FxHashSet};
 
+pub const RARI_NAVIGATION_ID_HEADER: &str = "rari-navigation-id";
+
+#[expect(
+    clippy::implicit_hasher,
+    reason = "FxHashMap is the specific hasher needed for this codebase"
+)]
+pub fn parse_navigation_id(headers: &FxHashMap<String, String>) -> Option<u32> {
+    headers.get(RARI_NAVIGATION_ID_HEADER).and_then(|value| value.parse().ok())
+}
+
 #[expect(
     clippy::implicit_hasher,
     reason = "FxHashMap is the specific hasher needed for this codebase"
@@ -20,6 +30,15 @@ pub fn extract_headers(headers: &HeaderMap) -> FxHashMap<String, String> {
         }
     }
     header_map
+}
+
+#[expect(clippy::implicit_hasher)]
+pub fn filter_headers_for_components(
+    headers: FxHashMap<String, String>,
+) -> FxHashMap<String, String> {
+    const SENSITIVE_HEADERS: &[&str] = &["authorization", "cookie", "proxy-authorization"];
+
+    headers.into_iter().filter(|(name, _)| !SENSITIVE_HEADERS.contains(&name.as_str())).collect()
 }
 
 pub fn merge_vary_with_accept(existing_vary: Option<&HeaderValue>) -> String {
@@ -433,6 +452,32 @@ mod tests {
         assert!(is_origin_allowed("http://app.example.com:8080", &allowed));
         assert!(!is_origin_allowed("https://app.example.com:443", &allowed));
         assert!(!is_origin_allowed("http://app.example.com:80", &allowed));
+    }
+
+    #[test]
+    fn test_parse_navigation_id() {
+        let mut headers = FxHashMap::default();
+        assert_eq!(super::parse_navigation_id(&headers), None);
+
+        headers.insert(super::RARI_NAVIGATION_ID_HEADER.to_string(), "42".to_string());
+        assert_eq!(super::parse_navigation_id(&headers), Some(42));
+
+        headers.insert(super::RARI_NAVIGATION_ID_HEADER.to_string(), "not-a-number".to_string());
+        assert_eq!(super::parse_navigation_id(&headers), None);
+    }
+
+    #[test]
+    fn test_filter_headers_for_components_redacts_sensitive_headers() {
+        let mut headers = FxHashMap::default();
+        headers.insert("authorization".to_string(), "secret".to_string());
+        headers.insert("cookie".to_string(), "session=abc".to_string());
+        headers.insert("user-agent".to_string(), "test-agent".to_string());
+
+        let filtered = filter_headers_for_components(headers);
+
+        assert!(!filtered.contains_key("authorization"));
+        assert!(!filtered.contains_key("cookie"));
+        assert_eq!(filtered.get("user-agent").map(String::as_str), Some("test-agent"));
     }
 
     #[test]

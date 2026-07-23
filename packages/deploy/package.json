@@ -22,11 +22,17 @@
     }
   },
   "scripts": {
-    "build": "vp pack"
+    "build": "pnpm typecheck && vp pack",
+    "lint": "vp lint",
+    "lint:fix": "vp lint --fix",
+    "typecheck": "tsc"
   },
   "devDependencies": {
     "@rari/logger": "workspace:*",
     "@types/node": "catalog:typescript",
+    "typescript": "catalog:typescript",
+    "typescript-7": "catalog:typescript",
+    "vite": "catalog:build",
     "vite-plus": "catalog:build"
   }
 }

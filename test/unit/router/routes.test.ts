@@ -1,5 +1,5 @@
 import { promises as fs } from 'node:fs'
-import { generateAppRouteManifest, isGroupSegment } from '@rari/router/routes'
+import { generateAppRouteManifest, isGroupSegment } from '@rari/router/build/routes'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test'
 
 vi.mock('node:fs', () => ({
@@ -200,7 +200,6 @@ describe('generateAppRouteManifest', () => {
       expect(manifest.loading[0]).toMatchObject({
         path: '/',
         filePath: 'loading.tsx',
-        componentId: 'loading:/',
       })
     })
 

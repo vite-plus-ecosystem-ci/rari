@@ -6,7 +6,7 @@ use ratatui::Frame;
 
 use crate::{
     changelog, git,
-    package::{Package, ReleaseType, ReleaseUnit, ReleasedPackage},
+    package::{Package, ReleaseType, ReleaseUnit, ReleasedPackage, release_tag},
     ui,
 };
 
@@ -53,11 +53,16 @@ pub struct App {
     pub released_packages: Vec<ReleasedPackage>,
     pub error_message: Option<String>,
     pub dry_run: bool,
+    pub notes_file: Option<PathBuf>,
     pub post_release_messages: Vec<String>,
 }
 
 impl App {
-    pub async fn new(only: Option<Vec<String>>, dry_run: bool) -> Result<Self> {
+    pub async fn new(
+        only: Option<Vec<String>>,
+        dry_run: bool,
+        notes_file: Option<PathBuf>,
+    ) -> Result<Self> {
         use crate::package::{PackageGroup, ReleaseUnit};
 
         let rari_pkg = Package::load("rari", "packages/rari").await?;
@@ -102,6 +107,7 @@ impl App {
             released_packages: vec![],
             error_message: None,
             dry_run,
+            notes_file,
             post_release_messages: vec![],
         })
     }
@@ -286,16 +292,48 @@ impl App {
                     let unit_name = unit.name();
                     let generates_changelog =
                         matches!(unit_name, "rari" | "create-rari-app" | "@rari/use-cache");
+                    let tag = release_tag(unit_name, version);
+                    let notes_override = self.notes_file.as_deref();
+                    let manual_notes =
+                        changelog::load_manual_notes(&tag, version, notes_override).await?;
+
+                    if let Some((path, _)) = &manual_notes {
+                        self.status_messages.push(format!("* Manual notes: {}", path.display()));
+                    } else {
+                        self.status_messages
+                            .push("ℹ No manual release notes found (cliff-only)".to_string());
+                    }
 
                     if generates_changelog {
                         if self.dry_run {
                             self.status_messages
                                 .push("[DRY RUN] Would generate changelog...".to_string());
+                            if manual_notes.is_some() {
+                                self.status_messages.push(
+                                    "[DRY RUN] Would inject manual notes into CHANGELOG.md"
+                                        .to_string(),
+                                );
+                            }
                         } else {
                             self.status_messages.push("Generating changelog...".to_string());
-                            let tag = format!("{unit_name}@{version}");
                             let package_path = unit.paths()[0];
                             changelog::generate(&tag, unit_name, package_path).await?;
+                            if let Some((_, body)) = &manual_notes {
+                                if changelog::inject_manual_notes(package_path, &tag, version, body)
+                                    .await?
+                                {
+                                    self.status_messages.push(
+                                        "* Injected manual notes into CHANGELOG.md".to_string(),
+                                    );
+                                } else {
+                                    let expected =
+                                        changelog::expected_changelog_headings(&tag, version)
+                                            .join("` or `");
+                                    self.status_messages.push(format!(
+                                        "⚠ Could not inject manual notes: missing heading `{expected}` in CHANGELOG.md"
+                                    ));
+                                }
+                            }
                         }
                         self.status_messages.push("* Generated changelog".to_string());
                     } else if self.dry_run {
@@ -310,13 +348,7 @@ impl App {
                 }
                 PublishStep::Committing => {
                     let message = format!("release: {}@{}", unit.name(), version);
-                    let tag = if unit.name() == "rari-binaries" {
-                        format!("v{version}")
-                    } else if unit.name() == "@rari/use-cache-binaries" {
-                        format!("use-cache-binaries@{version}")
-                    } else {
-                        format!("{}@{}", unit.name(), version)
-                    };
+                    let tag = release_tag(unit.name(), version);
                     if self.dry_run {
                         self.status_messages
                             .push(format!("[DRY RUN] Would commit with message: {message}"));
@@ -384,20 +416,16 @@ impl App {
                     self.publish_step = PublishStep::Done;
                     self.publish_progress = 1.0;
 
-                    let tag = if unit.name() == "rari-binaries" {
-                        format!("v{version}")
-                    } else if unit.name() == "@rari/use-cache-binaries" {
-                        format!("use-cache-binaries@{version}")
-                    } else {
-                        format!("{}@{}", unit.name(), version)
-                    };
+                    let tag = release_tag(unit.name(), version);
                     let release_notes = changelog::generate_release_notes(
                         &tag,
                         unit.name(),
                         self.previous_tag.as_deref(),
+                        version,
+                        self.notes_file.as_deref(),
                     )
                     .await
-                    .unwrap_or_else(|_| "See CHANGELOG.md for details.".to_string());
+                    .unwrap_or_else(|_| changelog::CHANGELOG_FALLBACK_NOTES.to_string());
                     self.released_packages.push(ReleasedPackage {
                         name: unit.name().to_string(),
                         version: version.clone(),

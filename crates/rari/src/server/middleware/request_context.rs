@@ -17,7 +17,7 @@ use serde_json::Value;
 use tokio::sync::Mutex as TokioMutex;
 use uuid::Uuid;
 
-use crate::server::core::utils::client::get_http_client;
+use crate::server::core::utils::{client::get_http_client, http};
 
 #[derive(Clone, Debug)]
 #[non_exhaustive]
@@ -63,6 +63,17 @@ pub struct CachedFetchResult {
     pub was_cached: bool,
     pub tags: Vec<String>,
 }
+
+impl CachedFetchResult {
+    /// 5xx responses are never cached: a transient backend error cached here
+    /// is replayed to every render for the TTL (default 60s), turning a blip
+    /// into a minute of failures. 4xx stays cacheable — a missing article is
+    /// stable data worth deduplicating.
+    fn is_cacheable(&self) -> bool {
+        self.status < 500
+    }
+}
+
 type InFlightFetches =
     Arc<DashMap<String, Arc<TokioMutex<Option<Result<CachedFetchResult, RariError>>>>>>;
 
@@ -82,14 +93,27 @@ static GLOBAL_FETCH_CACHE: LazyLock<Arc<Mutex<LruCache<String, CachedFetchResult
 static GLOBAL_IN_FLIGHT_FETCHES: LazyLock<InFlightFetches> =
     LazyLock::new(|| Arc::new(DashMap::new()));
 
-struct FetchCleanupGuard<'a> {
-    in_flight_fetches: &'a InFlightFetches,
+struct FetchCleanupGuard {
+    in_flight_fetches: InFlightFetches,
     cache_key: String,
+    armed: bool,
 }
 
-impl Drop for FetchCleanupGuard<'_> {
+impl FetchCleanupGuard {
+    fn new(in_flight_fetches: InFlightFetches, cache_key: String) -> Self {
+        Self { in_flight_fetches, cache_key, armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for FetchCleanupGuard {
     fn drop(&mut self) {
-        self.in_flight_fetches.remove(&self.cache_key);
+        if self.armed {
+            self.in_flight_fetches.remove(&self.cache_key);
+        }
     }
 }
 
@@ -100,8 +124,11 @@ pub struct RequestContext {
     start_time: Instant,
     route_path: String,
     pub cookie_header: Option<String>,
+    pub request_headers: FxHashMap<String, String>,
+    pub skip_layout_html_cache: bool,
     pub pending_cookies: Arc<DashMap<PendingCookieKey, PendingCookie>>,
     pub function_cache: Arc<DashMap<String, Value>>,
+    pub action_form_state: Option<Value>,
 }
 
 impl RequestContext {
@@ -113,14 +140,36 @@ impl RequestContext {
             start_time: Instant::now(),
             route_path,
             cookie_header: None,
+            request_headers: FxHashMap::default(),
+            skip_layout_html_cache: false,
             pending_cookies: Arc::new(DashMap::new()),
             function_cache: Arc::new(DashMap::new()),
+            action_form_state: None,
         }
     }
 
     #[must_use]
     pub fn with_cookies(mut self, cookie_header: Option<String>) -> Self {
         self.cookie_header = cookie_header;
+        self
+    }
+
+    #[must_use]
+    pub fn with_http_headers(mut self, headers: FxHashMap<String, String>) -> Self {
+        self.cookie_header = headers.get("cookie").cloned();
+        self.request_headers = http::filter_headers_for_components(headers);
+        self
+    }
+
+    #[must_use]
+    pub fn without_layout_html_cache(mut self) -> Self {
+        self.skip_layout_html_cache = true;
+        self
+    }
+
+    #[must_use]
+    pub fn with_action_form_state(mut self, form_state: Option<Value>) -> Self {
+        self.action_form_state = form_state;
         self
     }
 
@@ -224,52 +273,57 @@ impl RequestContext {
             entry.or_insert_with(|| Arc::new(TokioMutex::new(None))).clone()
         };
 
-        let mut guard = fetch_lock.lock().await;
+        let url = url.to_string();
+        let fetch_cache = Arc::clone(&self.fetch_cache);
+        let in_flight_fetches = Arc::clone(&self.in_flight_fetches);
+        let cache_key_for_task = cache_key.clone();
 
-        if let Some(result) = guard.as_ref() {
-            let mut cloned_result = result.clone()?;
-            cloned_result.tags = Self::merge_and_sort_tags(cloned_result.tags, tags);
+        tokio::spawn(async move {
+            let mut cleanup =
+                FetchCleanupGuard::new(Arc::clone(&in_flight_fetches), cache_key_for_task.clone());
+            let mut guard = fetch_lock.lock().await;
 
-            {
-                let mut cache = self.fetch_cache.lock();
-                cache.put(cache_key.clone(), cloned_result.clone());
+            if let Some(result) = guard.as_ref() {
+                cleanup.disarm();
+                let mut result = result.clone();
+                if let Ok(ref mut cached) = result {
+                    cached.tags = Self::merge_and_sort_tags(mem::take(&mut cached.tags), tags);
+                    *guard = Some(Ok(cached.clone()));
+                    if cached.is_cacheable() {
+                        let mut cache = fetch_cache.lock();
+                        cache.put(cache_key_for_task, cached.clone());
+                    }
+                }
+                return result;
             }
 
-            *guard = Some(Ok(cloned_result.clone()));
+            let mut fetch_result = Self::perform_fetch_standalone(&url, &options).await;
 
-            return Ok(cloned_result);
-        }
+            if let Ok(ref mut result) = fetch_result {
+                result.tags = Self::merge_and_sort_tags(mem::take(&mut result.tags), tags);
+            }
 
-        let _cleanup = FetchCleanupGuard {
-            in_flight_fetches: &self.in_flight_fetches,
-            cache_key: cache_key.clone(),
-        };
+            *guard = Some(fetch_result.clone());
 
-        let mut fetch_result = self.perform_fetch(url, &options).await;
+            if let Ok(ref cached_result) = fetch_result
+                && cached_result.is_cacheable()
+            {
+                let mut cache = fetch_cache.lock();
+                cache.put(cache_key_for_task, cached_result.clone());
+            }
 
-        if let Ok(ref mut result) = fetch_result {
-            result.tags = Self::merge_and_sort_tags(mem::take(&mut result.tags), tags);
-        }
-
-        *guard = Some(fetch_result.clone());
-
-        if let Ok(ref cached_result) = fetch_result {
-            let mut cache = self.fetch_cache.lock();
-            cache.put(cache_key.clone(), cached_result.clone());
-        }
-
-        drop(guard);
-
-        fetch_result
+            drop(guard);
+            fetch_result
+        })
+        .await
+        .map_err(|e| RariError::internal(format!("fetch singleflight join failed: {e}")))?
     }
 
-    async fn perform_fetch(
-        &self,
+    async fn perform_fetch_standalone(
         url: &str,
         options: &FxHashMap<String, String>,
     ) -> Result<CachedFetchResult, RariError> {
-        let client = get_http_client()
-            .map_err(|e| RariError::network(format!("HTTP client initialization failed: {e}")))?;
+        let client = get_http_client()?;
         let mut request = client.get(url);
 
         if let Some(headers_str) = options.get("headers")

@@ -2,7 +2,7 @@
   "name": "@rari/monorepo",
   "type": "module",
   "private": true,
-  "packageManager": "pnpm@11.8.0",
+  "packageManager": "pnpm@11.15.1",
   "scripts": {
     "build": "pnpm -r run build",
     "typecheck": "pnpm -r run typecheck",
@@ -23,13 +23,17 @@
     "@napi-rs/cli": "catalog:build",
     "@playwright/test": "catalog:testing",
     "@types/node": "catalog:typescript",
-    "@typescript/native-preview": "catalog:typescript",
+    "@types/react": "catalog:react",
     "@vitest/coverage-v8": "catalog:testing",
     "eslint": "catalog:eslint",
     "eslint-plugin-de-morgan": "catalog:eslint",
     "eslint-plugin-oxlint": "catalog:eslint",
     "eslint-plugin-react-refresh": "catalog:eslint",
     "knip": "catalog:eslint",
-    "vite-plus": "catalog:build"
+    "react": "catalog:react",
+    "typescript": "catalog:typescript",
+    "vite": "catalog:build",
+    "vite-plus": "catalog:build",
+    "vitest": "catalog:build"
   }
 }

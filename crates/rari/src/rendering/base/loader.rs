@@ -39,23 +39,6 @@ impl RscJsLoader {
             if (!globalThis['~render']) globalThis['~render'] = {{}};
             globalThis['~render'].currentComponent = "{component_id}";
 
-            if (globalThis['~rsc'].componentData && !globalThis['~rsc'].componentData.has("{component_id}")) {{
-                globalThis['~rsc'].componentData.set("{component_id}", {{
-                    promises: new Map(),
-                    values: new Map(),
-                    renderTime: Date.now(),
-                    isolated: true
-                }});
-            }}
-
-            if (globalThis['~components']?.permissions) {{
-                const componentType = "{component_id}".includes("TestComponent") ? "test" : "generic";
-                globalThis['~components'].permissions.set("{component_id}", {{
-                    canAccessCalculations: true,
-                    componentType: componentType
-                }});
-            }}
-
             return {{
                 componentId: "{component_id}",
                 environmentSetup: true,
@@ -346,59 +329,6 @@ impl RscJsLoader {
         create_js_wrapper(&extraction_code)
     }
 
-    pub fn create_rsc_extraction_script(component_id: &str) -> String {
-        let extraction_code = format!(
-            r#"
-            if (typeof globalThis['~render']?.lastResult === 'undefined') {{
-                return {{
-                    error: true,
-                    message: "No rendered result available. The component may have suspended.",
-                    rsc: ["$", "div", null, {{
-                        children: [
-                            "Component: {component_id}",
-                            "Component suspended or failed to render"
-                        ]
-                    }}]
-                }};
-            }}
-
-            const renderResult = globalThis['~render'].lastResult;
-            let extractedRsc = null;
-
-            if (renderResult && renderResult.rsc) {{
-                extractedRsc = renderResult.rsc;
-            }} else if (renderResult && renderResult.html) {{
-                extractedRsc = ["$", "div", null, {{
-                    "data-rsc-component": "{component_id}",
-                    children: "Component rendered but RSC data unavailable"
-                }}];
-            }} else {{
-                extractedRsc = ["$", "div", null, {{
-                    children: [
-                        "Component: {component_id}",
-                        "Failed to extract RSC content"
-                    ]
-                }}];
-            }}
-
-            return {{
-                success: true,
-                rsc: extractedRsc,
-                debug: {{
-                    component_id: "{component_id}",
-                    rscType: typeof extractedRsc,
-                    hasRscData: !!renderResult?.rsc,
-                    hasHtmlData: !!renderResult?.html,
-                    hasRenderResult: !!renderResult,
-                    renderResultKeys: renderResult ? Object.keys(renderResult) : []
-                }}
-            }};
-            "#
-        );
-
-        create_js_wrapper(&extraction_code)
-    }
-
     pub fn create_component_verification_script(
         component_id: &str,
         hashed_component_id: &str,
@@ -448,25 +378,6 @@ impl RscJsLoader {
         create_js_wrapper(&verification_code)
     }
 
-    pub fn create_isolation_namespacing_script(component_id: &str) -> String {
-        format!(
-            r#"
-            (function() {{
-                if (!globalThis['~rsc']) globalThis['~rsc'] = {{}};
-                if (!globalThis['~rsc'].componentNamespaces) globalThis['~rsc'].componentNamespaces = new Map();
-                if (!globalThis['~rsc'].componentNamespaces.has("{component_id}")) {{
-                    globalThis['~rsc'].componentNamespaces.set("{component_id}", new Map());
-                }}
-
-                return {{
-                    componentId: "{component_id}",
-                    hasNamespace: globalThis['~rsc'].componentNamespaces.has("{component_id}")
-                }};
-            }})();
-            "#
-        )
-    }
-
     pub fn create_module_loader_check_script() -> String {
         r"
         (function() {
@@ -482,10 +393,6 @@ impl RscJsLoader {
             (function() {{
                 if (!globalThis['~render']) globalThis['~render'] = {{}};
                 globalThis['~render'].currentComponent = "{component_id}";
-
-                if (globalThis['~components']?.promiseMap && globalThis['~components'].promiseMap.has("{component_id}")) {{
-                    globalThis['~components'].promiseMap.set("{component_id}", new Map());
-                }}
 
                 return true;
             }})();

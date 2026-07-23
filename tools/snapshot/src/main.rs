@@ -113,6 +113,9 @@ fn main() {
         }
     }
 
+    residual_esm.sort_by_key(|(a, _)| *a);
+    residual_js.sort_by_key(|(a, _)| *a);
+
     #[expect(clippy::print_stdout, reason = "CLI tool - stdout output is expected")]
     {
         println!("Residual lazy sources: {} ESM, {} JS", residual_esm.len(), residual_js.len());
@@ -156,6 +159,8 @@ fn write_line(buf: &mut String, line: &str) {
 }
 
 fn maybe_transpile(specifier: &str, source: &str) -> String {
+    let source = transpile::substitute_version_placeholders_in_source(source);
+
     let media_type = if specifier.starts_with("node:") {
         MediaType::TypeScript
     } else {
@@ -164,7 +169,7 @@ fn maybe_transpile(specifier: &str, source: &str) -> String {
 
     match media_type {
         MediaType::TypeScript | MediaType::Tsx | MediaType::Jsx => {}
-        _ => return source.to_string(),
+        _ => return source,
     }
 
     let specifier_url = url::Url::parse(specifier).unwrap_or_else(|_| {

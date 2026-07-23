@@ -1,45 +1,20 @@
-import { Buffer } from 'node:buffer'
-import { deserialize } from 'node:v8'
-import { $$cache__, encodeBoundArgs } from '@rari/use-cache/runtime/cache-wrapper'
-import { describe, expect, it } from 'vite-plus/test'
+import type { MockBackend } from './deno-mock'
+import { $$cache__, setUseCacheBuildId } from '@rari/use-cache/runtime/cache-wrapper'
+import { REDB_CACHE_OPS } from '@rari/use-cache/runtime/storage/redb'
+import { REDIS_CACHE_OPS } from '@rari/use-cache/runtime/storage/redis'
+import { afterEach, beforeEach, describe, expect, it } from 'vite-plus/test'
+import { patchDenoBackend, patchDenoOps, restoreDeno } from './deno-mock'
 
-interface RemoteCacheOps {
-  op_cache_remote_get: (key: string) => Promise<string | null>
-  op_cache_remote_set: (key: string, value: string, ttlMs: number) => Promise<void>
-}
-
-interface DenoLike {
-  core: {
-    ops: RemoteCacheOps
-  }
-}
-
-interface MockBackend {
-  read: (key: string) => string | null
-  write: (key: string, value: string, ttlMs: number) => void
-}
-
-function installOpsMock(backend: MockBackend) {
-  (globalThis as { Deno?: DenoLike }).Deno = {
-    core: {
-      ops: {
-        async op_cache_remote_get(key: string) {
-          return backend.read(key)
-        },
-        async op_cache_remote_set(key: string, value: string, ttlMs: number) {
-          backend.write(key, value, ttlMs)
-        },
-      },
-    },
-  }
+function installOpsMock(backend: MockBackend, remoteHandler: 'redis' | 'redb' | 'test' = 'redis') {
+  patchDenoBackend(REDIS_CACHE_OPS, backend, { remoteHandler })
 }
 
 function uninstallOpsMock(): void {
-  delete (globalThis as { Deno?: DenoLike }).Deno
+  restoreDeno()
 }
 
 const CACHE_LIMIT = 1000
-const FILL_COUNT = 2 * CACHE_LIMIT + 500
+const FILL_COUNT = CACHE_LIMIT + 1
 
 async function callCache<Args extends unknown[]>(
   kind: string,
@@ -69,8 +44,13 @@ function makeInMemoryBackend(): MockBackend {
 }
 
 describe('$$cache__', () => {
+  beforeEach(() => {
+    setUseCacheBuildId('test-build-id')
+  })
+
   afterEach(() => {
     uninstallOpsMock()
+    setUseCacheBuildId('development')
   })
 
   it('caches identical calls', async () => {
@@ -112,17 +92,32 @@ describe('$$cache__', () => {
     expect(callCount).toBe(2)
   })
 
-  it('uses stable cache keys for equivalent object key order', async () => {
+  it('uses different cache keys for different build ids', async () => {
+    let callCount = 0
+    const fn = (a: number) => {
+      callCount++
+      return a
+    }
+    const id = 'diff-build-id'
+
+    setUseCacheBuildId('build-a')
+    await callCache('default', id, 1, fn, [1])
+    setUseCacheBuildId('build-b')
+    await callCache('default', id, 1, fn, [1])
+    expect(callCount).toBe(2)
+  })
+
+  it('uses different cache keys when plain object key insertion order differs', async () => {
     let callCount = 0
     const fn = (..._args: unknown[]) => {
       callCount++
       return 'ok'
     }
-    const id = 'stable-object-order'
+    const id = 'object-key-order'
 
     await callCache('default', id, 1, fn, [{ a: 1, b: 2 }])
     await callCache('default', id, 1, fn, [{ b: 2, a: 1 }])
-    expect(callCount).toBe(1)
+    expect(callCount).toBe(2)
   })
 
   it('supports rich and circular cache key args', async () => {
@@ -135,25 +130,17 @@ describe('$$cache__', () => {
     const circular: { self?: unknown } = {}
     circular.self = circular
 
-    await callCache('default', id, 1, fn, [
+    const args = [
       1n,
       new Date('2024-01-01T00:00:00.000Z'),
       new Map([['a', new Set([1, 2])]]),
       /abc/gi,
       circular,
       Symbol.for('cache-key'),
-      function keyFn() {},
-    ])
+    ] as const
 
-    await callCache('default', id, 1, fn, [
-      1n,
-      new Date('2024-01-01T00:00:00.000Z'),
-      new Map([['a', new Set([1, 2])]]),
-      /abc/gi,
-      circular,
-      Symbol.for('cache-key'),
-      function keyFn() {},
-    ])
+    await callCache('default', id, 1, fn, [...args])
+    await callCache('default', id, 1, fn, [...args])
     expect(callCount).toBe(1)
   })
 
@@ -167,7 +154,7 @@ describe('$$cache__', () => {
     expect(r2).toBe(10)
   })
 
-  it('evicts least recently used resolved entries after exceeding the relaxed LRU ceiling', async () => {
+  it('evicts least recently used resolved entries after exceeding the LRU max size', async () => {
     let callCount = 0
     const fn = (a: number) => {
       callCount++
@@ -201,6 +188,72 @@ describe('$$cache__', () => {
     expect(calls).toBe(1)
   })
 
+  it('falls back to memory storage when remote ops exist but handler is not configured', async () => {
+    let redbGetCalls = 0
+    let redbSetCalls = 0
+    let redisGetCalls = 0
+    let redisSetCalls = 0
+
+    patchDenoOps({
+      [REDB_CACHE_OPS.get]: async () => {
+        redbGetCalls++
+        return null
+      },
+      [REDB_CACHE_OPS.set]: async () => {
+        redbSetCalls++
+      },
+      [REDIS_CACHE_OPS.get]: async () => {
+        redisGetCalls++
+        return null
+      },
+      [REDIS_CACHE_OPS.set]: async () => {
+        redisSetCalls++
+      },
+    })
+
+    let calls = 0
+    const fn = (a: number) => {
+      calls++
+      return a + 1
+    }
+
+    await callCache('remote', 'remote-fallback-unconfigured', 1, fn, [5])
+    await callCache('remote', 'remote-fallback-unconfigured', 1, fn, [5])
+    expect(calls).toBe(1)
+    expect(redbGetCalls).toBe(0)
+    expect(redbSetCalls).toBe(0)
+    expect(redisGetCalls).toBe(0)
+    expect(redisSetCalls).toBe(0)
+  })
+
+  it('includes bound closure values in cache keys', async () => {
+    const prefix = 'v1'
+    let calls = 0
+    const fn = (_bound: unknown[], id: string) => {
+      calls++
+      return `${prefix}:${id}`
+    }
+    const bound = ['ref-id', prefix]
+
+    await callCache('default', 'bound-closure-args', 1, fn, [bound, 'a'])
+    await callCache('default', 'bound-closure-args', 1, fn, [['ref-id', 'v2'], 'a'])
+    expect(calls).toBe(2)
+  })
+
+  it('reuses cache entries when bound closure values are unchanged', async () => {
+    const prefix = 'stable'
+    let calls = 0
+    const fn = (_bound: unknown[], id: string) => {
+      calls++
+      return `${prefix}:${id}`
+    }
+    const bound = ['ref-id', prefix]
+
+    await callCache('default', 'stable-bound-closure', 1, fn, [bound, 'a'])
+    await callCache('default', 'stable-bound-closure', 1, fn, [bound, 'a'])
+    expect(calls).toBe(1)
+  })
+
   it('reads from mock backend on cache hit', async () => {
     const backend = makeInMemoryBackend()
     installOpsMock(backend)
@@ -219,50 +272,42 @@ describe('$$cache__', () => {
     expect(r2).toBe(30)
     expect(calls).toBe(1)
   })
-})
 
-describe('encodeBoundArgs', () => {
-  it('encodes simple args to base64 v8 payload', () => {
-    const result = encodeBoundArgs('ref1', 1, 'hello', true)
-    expect(typeof result).toBe('string')
-    const decoded = deserialize(Buffer.from(result, 'base64'))
-    expect(decoded).toEqual(['ref1', 1, 'hello', true])
-  })
+  it('private cache skips default storage after dynamic context is marked', async () => {
+    let defaultCalls = 0
+    let remoteCalls = 0
+    const defaultFn = () => {
+      defaultCalls++
+      return 'default'
+    }
+    const remoteFn = () => {
+      remoteCalls++
+      return 'remote'
+    }
 
-  it('encodes empty args', () => {
-    const result = encodeBoundArgs('ref1')
-    expect(deserialize(Buffer.from(result, 'base64'))).toEqual(['ref1'])
-  })
+    const { runWithUseCacheDynamicContext, resetUseCacheDynamicContextForTests } = await import('@rari/use-cache/runtime/cache-dynamic-context')
+    const { $$cache__ } = await import('@rari/use-cache/runtime/cache-wrapper')
 
-  it('encodes null and undefined in args', () => {
-    const result = encodeBoundArgs('ref1', null, undefined)
-    expect(deserialize(Buffer.from(result, 'base64'))).toEqual(['ref1', null, undefined])
-  })
+    async function call(kind: string, id: string, fn: () => string) {
+      try {
+        return $$cache__(kind, id, 0, fn, [])
+      }
+      catch (e) {
+        if (e instanceof Promise)
+          return await e
+        throw e
+      }
+    }
 
-  it('includes ref id in encoded output', () => {
-    expect(encodeBoundArgs('ref1', 1)).not.toBe(encodeBoundArgs('ref2', 1))
-  })
+    await runWithUseCacheDynamicContext(async () => {
+      await call('default', 'dynamic-default', defaultFn)
+      await call('default', 'dynamic-default', defaultFn)
+      await call('remote', 'dynamic-remote-a', remoteFn)
+      await call('remote', 'dynamic-remote-b', remoteFn)
+    })
 
-  it('encodes rich and circular args', () => {
-    const circular: { value: number, self?: unknown } = { value: 1 }
-    circular.self = circular
-    const result = encodeBoundArgs(
-      'ref1',
-      1n,
-      new Date('2024-01-01T00:00:00.000Z'),
-      new Map([['items', new Set([1, 2])]]),
-      /cache/gi,
-      circular,
-    )
-
-    expect(typeof result).toBe('string')
-    const decoded = deserialize(Buffer.from(result, 'base64'))
-    expect(decoded[0]).toBe('ref1')
-    expect(decoded[1]).toBe(1n)
-    expect(decoded[2]).toEqual(new Date('2024-01-01T00:00:00.000Z'))
-    expect(decoded[3]).toEqual(new Map([['items', new Set([1, 2])]]))
-    expect(decoded[4]).toEqual(/cache/gi)
-    expect(decoded[5].value).toBe(1)
-    expect(decoded[5].self).toBe(decoded[5])
+    expect(defaultCalls).toBe(2)
+    expect(remoteCalls).toBe(2)
+    resetUseCacheDynamicContextForTests()
   })
 })

@@ -3,6 +3,7 @@ use std::env;
 pub mod cache;
 mod config;
 mod optimizer;
+mod scanner;
 mod types;
 
 use std::sync::Arc;
@@ -15,7 +16,11 @@ use axum::{
 pub use cache::ImageCache;
 pub use config::{ImageConfig, ImageVariant, LocalPattern, RemotePattern};
 pub use optimizer::{ImageOptimizer, PreloadImage};
-pub use types::{ImageFormat, OptimizeParams, OptimizedImage};
+use rari_error::RariError;
+pub use scanner::{ImageUsageManifest, ScanError, scan_for_image_usage};
+pub use types::{DEFAULT_IMAGE_QUALITY, ImageFormat, OptimizeParams, OptimizedImage};
+
+use crate::server::{config::Config, error_response};
 
 #[derive(Clone)]
 #[non_exhaustive]
@@ -79,17 +84,22 @@ pub enum ImageError {
     InvalidParams(String),
 }
 
+impl From<&ImageError> for RariError {
+    fn from(err: &ImageError) -> Self {
+        match err {
+            ImageError::InvalidUrl(_) | ImageError::InvalidParams(_) => {
+                Self::bad_request(err.to_string())
+            }
+            ImageError::UnauthorizedDomain(_) => Self::forbidden(err.to_string()),
+            ImageError::FetchError(_) => Self::network(err.to_string()),
+            ImageError::ProcessingError(_) => Self::internal(err.to_string()),
+        }
+    }
+}
+
 impl IntoResponse for ImageError {
     fn into_response(self) -> Response {
-        let (status, message) = match self {
-            Self::InvalidUrl(_) | Self::InvalidParams(_) => {
-                (StatusCode::BAD_REQUEST, self.to_string())
-            }
-            Self::UnauthorizedDomain(_) => (StatusCode::FORBIDDEN, self.to_string()),
-            Self::FetchError(_) => (StatusCode::BAD_GATEWAY, self.to_string()),
-            Self::ProcessingError(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
-        };
-
-        (status, message).into_response()
+        let is_dev = Config::get().is_some_and(Config::is_development);
+        error_response::json_response(&RariError::from(&self), is_dev)
     }
 }

@@ -22,6 +22,10 @@ export default { useRouter, usePathname, useParams, useSearchParams };
 
 pub const RARI_HEADERS_STUB: &str = r"
 export async function cookies() {
+  const store = globalThis['~rari']?.cookies?.();
+  if (store)
+    return store;
+
   return {
     get() { return undefined; },
     getAll() { return []; },
@@ -31,6 +35,23 @@ export async function cookies() {
   };
 }
 export default { cookies };
+";
+
+pub const RARI_CACHE_STUB: &str = r"
+export function cacheLife() {}
+export function cacheTag() {}
+export async function connection() {}
+export async function revalidateTag() {}
+export async function revalidatePath() {}
+export async function updateTag() {}
+export default {
+  cacheLife,
+  cacheTag,
+  connection,
+  revalidateTag,
+  revalidatePath,
+  updateTag,
+};
 ";
 
 pub const RARI_IMAGE_STUB: &str = r"
@@ -48,6 +69,13 @@ export const DEFAULT_QUALITY_LEVELS = { low: 25, medium: 50, high: 75, max: 100 
 export const DEFAULT_MAX_CACHE_SIZE = 50 * 1024 * 1024;
 export const DEFAULT_MINIMUM_CACHE_TTL = 60;
 export default Image;
+";
+
+pub const RARI_CALL_SERVER_STUB: &str = r"
+export async function callServer() {
+  throw new Error('callServer must not be invoked during SSR');
+}
+export default { callServer };
 ";
 
 pub const RARI_CLIENT_STUB: &str = r"
