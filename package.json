@@ -30,6 +30,8 @@
     "knip": "catalog:eslint",
     "react": "catalog:react",
     "typescript": "catalog:typescript",
-    "vite-plus": "catalog:build"
+    "vite": "catalog:build",
+    "vite-plus": "catalog:build",
+    "vitest": "catalog:build"
   }
 }
