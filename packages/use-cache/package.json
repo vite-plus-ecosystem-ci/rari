@@ -74,6 +74,7 @@
     "@types/node": "catalog:typescript",
     "typescript": "catalog:typescript",
     "typescript-7": "catalog:typescript",
+    "vite": "catalog:build",
     "vite-plus": "catalog:build"
   }
 }

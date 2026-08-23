@@ -14,8 +14,27 @@ minimumReleaseAgeExclude:
   - rari-win32-arm64@0.15.13
   - rari-win32-x64@0.15.13
   - rari@0.15.13
+  - '@voidzero-dev/vite-plus-core@0.0.0-commit.7ebf81e43af581194844e8fe18f65ed2eb544642'
+  - '@voidzero-dev/vite-plus-darwin-arm64@0.0.0-commit.7ebf81e43af581194844e8fe18f65ed2eb544642'
+  - '@voidzero-dev/vite-plus-darwin-x64@0.0.0-commit.7ebf81e43af581194844e8fe18f65ed2eb544642'
+  - '@voidzero-dev/vite-plus-linux-arm64-gnu@0.0.0-commit.7ebf81e43af581194844e8fe18f65ed2eb544642'
+  - '@voidzero-dev/vite-plus-linux-arm64-musl@0.0.0-commit.7ebf81e43af581194844e8fe18f65ed2eb544642'
+  - '@voidzero-dev/vite-plus-linux-x64-gnu@0.0.0-commit.7ebf81e43af581194844e8fe18f65ed2eb544642'
+  - '@voidzero-dev/vite-plus-linux-x64-musl@0.0.0-commit.7ebf81e43af581194844e8fe18f65ed2eb544642'
+  - '@voidzero-dev/vite-plus-win32-arm64-msvc@0.0.0-commit.7ebf81e43af581194844e8fe18f65ed2eb544642'
+  - '@voidzero-dev/vite-plus-win32-x64-msvc@0.0.0-commit.7ebf81e43af581194844e8fe18f65ed2eb544642'
+  - vite-plus@0.0.0-commit.7ebf81e43af581194844e8fe18f65ed2eb544642
 shellEmulator: true
 trustPolicy: no-downgrade
+# Ecosystem-ci smoke test only: preview builds are published by the registry
+# bridge without provenance attestation, which trips the no-downgrade check.
+# Real vite-plus npm releases are published with provenance.
+trustPolicyExclude:
+  - vite-plus
+  - '@voidzero-dev/*'
+  # pnpm cross-major false positive (pnpm/pnpm#10202): an earlier-published
+  # version on another major carries provenance this one lacks.
+  - cytoscape
 packages:
   - examples/*
   - packages/*
@@ -29,8 +48,10 @@ catalogs:
     '@napi-rs/cli': ^3.8.6
     lightningcss: ^1.33.0
     rolldown: ^1.2.4
-    vite: ^8.2.1
-    vite-plus: ^0.2.9
+    vite: npm:@voidzero-dev/vite-plus-core@0.0.0-commit.7ebf81e43af581194844e8fe18f65ed2eb544642
+    vite-plus: 0.0.0-commit.7ebf81e43af581194844e8fe18f65ed2eb544642
+    vitest: 4.1.11
+    '@vitest/coverage-v8': 4.1.11
   cli:
     '@clack/prompts': ^1.7.0
   default:
@@ -78,7 +99,7 @@ catalogs:
     tailwindcss: ^4.3.3
   testing:
     '@playwright/test': ^1.62.1
-    '@vitest/coverage-v8': ^4.1.10
+    '@vitest/coverage-v8': 4.1.11
   typescript:
     '@types/node': ^26.2.0
     # https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/#running-side-by-side-with-typescript-6.0
@@ -86,3 +107,13 @@ catalogs:
     typescript-7: npm:typescript@^7.0.2
 allowBuilds:
   core-js: true
+overrides:
+  vite@*: catalog:build
+  vitest@*: catalog:build
+peerDependencyRules:
+  allowAny:
+    - vite
+    - vitest
+  allowedVersions:
+    vite: '*'
+    vitest: '*'
