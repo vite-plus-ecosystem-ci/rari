@@ -14,13 +14,23 @@ minimumReleaseAgeExclude:
   - rari-win32-arm64@0.15.17
   - rari-win32-x64@0.15.17
   - rari@0.15.17
+  - '@voidzero-dev/vite-plus-core@0.0.0-commit.6d65e1780791e2b24b27cf7deb63f57a420e78de'
+  - '@voidzero-dev/vite-plus-darwin-arm64@0.0.0-commit.6d65e1780791e2b24b27cf7deb63f57a420e78de'
+  - '@voidzero-dev/vite-plus-darwin-x64@0.0.0-commit.6d65e1780791e2b24b27cf7deb63f57a420e78de'
+  - '@voidzero-dev/vite-plus-linux-arm64-gnu@0.0.0-commit.6d65e1780791e2b24b27cf7deb63f57a420e78de'
+  - '@voidzero-dev/vite-plus-linux-arm64-musl@0.0.0-commit.6d65e1780791e2b24b27cf7deb63f57a420e78de'
+  - '@voidzero-dev/vite-plus-linux-x64-gnu@0.0.0-commit.6d65e1780791e2b24b27cf7deb63f57a420e78de'
+  - '@voidzero-dev/vite-plus-linux-x64-musl@0.0.0-commit.6d65e1780791e2b24b27cf7deb63f57a420e78de'
+  - '@voidzero-dev/vite-plus-win32-arm64-msvc@0.0.0-commit.6d65e1780791e2b24b27cf7deb63f57a420e78de'
+  - '@voidzero-dev/vite-plus-win32-x64-msvc@0.0.0-commit.6d65e1780791e2b24b27cf7deb63f57a420e78de'
+  - vite-plus@0.0.0-commit.6d65e1780791e2b24b27cf7deb63f57a420e78de
 shellEmulator: true
 trustPolicy: no-downgrade
 packages:
   - examples/*
   - packages/*
-  # Generated platform binary packages must not become workspace
-  # importers or frozen CI installs fail after restore-use-cache-addon.
+    # Generated platform binary packages must not become workspace
+    # importers or frozen CI installs fail after restore-use-cache-addon.
   - '!packages/rari-*'
   - '!packages/use-cache-*'
   - test/fixtures/*
@@ -34,8 +44,10 @@ catalogs:
     lightningcss: ^1.33.0
     oxc-transform-react: ^0.147.0
     rolldown: ^1.2.6
-    vite: ^8.2.2
-    vite-plus: ^0.3.0
+    vite: npm:@voidzero-dev/vite-plus-core@0.0.0-commit.6d65e1780791e2b24b27cf7deb63f57a420e78de
+    vite-plus: 0.0.0-commit.6d65e1780791e2b24b27cf7deb63f57a420e78de
+    vitest: 4.1.11
+    '@vitest/coverage-v8': 4.1.11
   cli:
     '@clack/prompts': ^1.7.0
   default:
@@ -83,7 +95,7 @@ catalogs:
     tailwindcss: ^4.3.3
   testing:
     '@playwright/test': ^1.62.1
-    '@vitest/coverage-v8': ^4.1.11
+    '@vitest/coverage-v8': 4.1.11
   typescript:
     '@types/node': ^26.4.0
     # https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/#running-side-by-side-with-typescript-6.0
@@ -91,3 +103,16 @@ catalogs:
     typescript-7: npm:typescript@^7.0.2
 allowBuilds:
   core-js: true
+trustPolicyExclude:
+  - vite-plus
+  - '@voidzero-dev/*'
+overrides:
+  vite@*: catalog:build
+  vitest@*: catalog:build
+peerDependencyRules:
+  allowAny:
+    - vite
+    - vitest
+  allowedVersions:
+    vite: '*'
+    vitest: '*'

@@ -16,9 +16,7 @@ export default defineConfig({
       'runtime/cache-wrapper': 'src/runtime/cache-wrapper.ts',
       'runtime/cache-dynamic-context': 'src/runtime/cache-dynamic-context.ts',
     },
-    deps: {
-      neverBundle: ['react-server-dom-webpack/client'],
-    },
+    deps: { resolveDepSubpath: true, neverBundle: ['react-server-dom-webpack/client'] },
     minify: true,
   },
 })
