@@ -7,8 +7,6 @@ export default defineConfig({
   pack: {
     entry: ['src/vite.ts', 'src/eslint.ts'],
     minify: true,
-    deps: {
-      neverBundle: true,
-    },
+    deps: { resolveDepSubpath: true, neverBundle: true },
   },
 })

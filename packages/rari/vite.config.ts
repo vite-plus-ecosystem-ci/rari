@@ -44,6 +44,7 @@ export default defineConfig({
     minify: true,
     plugins: [createReactCompilerPlugin(true, 'library')],
     deps: {
+      resolveDepSubpath: true,
       neverBundle: [
         '@mdx-js/mdx',
         'lightningcss',

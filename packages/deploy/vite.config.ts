@@ -5,6 +5,7 @@ export default defineConfig({
   fmt: monorepoFmt,
   lint: monorepoLint,
   pack: {
+    deps: { resolveDepSubpath: true },
     entry: ['src/index.ts', 'src/railway.ts', 'src/render.ts'],
     minify: true,
   },
