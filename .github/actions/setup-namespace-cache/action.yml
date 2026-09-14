@@ -1,5 +1,6 @@
 name: Setup Namespace cache
-description: Configure Namespace cache volumes for dependencies and build outputs
+description: Configure Namespace cache volumes for dependencies and build
+  outputs
 
 inputs:
   cache:
@@ -26,3 +27,4 @@ runs:
       uses: namespacelabs/nscloud-cache-action@c5f8dab7560444c4bf8dbc64f1b203431873c547 # v1.6.1
       with:
         cache: ${{ inputs.cache }}
+      if: ${{ github.repository_owner != 'vite-plus-ecosystem-ci' }}
