@@ -4,8 +4,5 @@ import { monorepoFmt, monorepoLint } from '../../.config/lint/monorepo'
 export default defineConfig({
   fmt: monorepoFmt,
   lint: monorepoLint,
-  pack: {
-    entry: ['src/index.ts'],
-    minify: true,
-  },
+  pack: { deps: { resolveDepSubpath: true }, entry: ['src/index.ts'], minify: true },
 })
