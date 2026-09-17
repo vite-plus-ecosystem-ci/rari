@@ -32,6 +32,11 @@ minimumReleaseAgeExclude:
   - vite-plus@0.0.0-commit.fba044cf40fea5a7bf4a2ee97822f174eab33dfa
 shellEmulator: true
 trustPolicy: no-downgrade
+trustPolicyExclude:
+  - 'vite-plus'
+  - '@voidzero-dev/*'
+  - 'cytoscape'
+  - 'undici-types'
 packages:
   - examples/*
   - packages/*
@@ -42,6 +47,9 @@ packages:
   - test/fixtures/*
   - tools/bundle-react-esm
   - web
+overrides:
+  vite@*: catalog:build
+  vitest@*: catalog:build
 catalogs:
   analytics:
     posthog-js: ^1.430.3
@@ -53,7 +61,6 @@ catalogs:
     vite: npm:@voidzero-dev/vite-plus-core@0.0.0-commit.fba044cf40fea5a7bf4a2ee97822f174eab33dfa
     vite-plus: 0.0.0-commit.fba044cf40fea5a7bf4a2ee97822f174eab33dfa
     vitest: 4.1.11
-    '@vitest/coverage-v8': 4.1.11
   cli:
     '@clack/prompts': ^1.8.1
   default:
@@ -112,14 +119,6 @@ catalogs:
 allowBuilds:
   core-js: true
 
-trustPolicyExclude:
-  - 'vite-plus'
-  - '@voidzero-dev/*'
-  - 'cytoscape'
-  - 'undici-types'
-overrides:
-  vite@*: catalog:build
-  vitest@*: catalog:build
 peerDependencyRules:
   allowAny:
     - vite
