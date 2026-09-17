@@ -49,7 +49,7 @@ catalogs:
     '@napi-rs/cli': ^3.9.1
     lightningcss: ^1.33.0
     oxc-transform-react: ^0.147.0
-    rolldown: ^1.2.8
+    rolldown: 1.2.8
     vite: npm:@voidzero-dev/vite-plus-core@0.0.0-commit.fba044cf40fea5a7bf4a2ee97822f174eab33dfa
     vite-plus: 0.0.0-commit.fba044cf40fea5a7bf4a2ee97822f174eab33dfa
     vitest: 4.1.11
