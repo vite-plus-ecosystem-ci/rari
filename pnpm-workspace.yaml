@@ -53,7 +53,6 @@ catalogs:
     vite: npm:@voidzero-dev/vite-plus-core@0.0.0-commit.40ce1b34104d16f3c3a2d9fe8eb1b016f5a06b67
     vite-plus: 0.0.0-commit.40ce1b34104d16f3c3a2d9fe8eb1b016f5a06b67
     vitest: 5.0.1
-    '@vitest/coverage-v8': 5.0.1
   cli:
     '@clack/prompts': ^1.8.1
   default:
