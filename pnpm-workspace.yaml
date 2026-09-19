@@ -32,6 +32,10 @@ minimumReleaseAgeExclude:
   - vite-plus@0.0.0-commit.40ce1b34104d16f3c3a2d9fe8eb1b016f5a06b67
 shellEmulator: true
 trustPolicy: no-downgrade
+trustPolicyExclude:
+  - 'vite-plus'
+  - '@voidzero-dev/*'
+  - 'cytoscape'
 packages:
   - examples/*
   - packages/*
@@ -42,6 +46,9 @@ packages:
   - test/fixtures/*
   - tools/bundle-react-esm
   - web
+overrides:
+  vite@*: catalog:build
+  vitest@*: catalog:build
 catalogs:
   analytics:
     posthog-js: ^1.430.3
@@ -111,13 +118,6 @@ catalogs:
 allowBuilds:
   core-js: true
 
-trustPolicyExclude:
-  - 'vite-plus'
-  - '@voidzero-dev/*'
-  - 'cytoscape'
-overrides:
-  vite@*: catalog:build
-  vitest@*: catalog:build
 peerDependencyRules:
   allowAny:
     - vite
