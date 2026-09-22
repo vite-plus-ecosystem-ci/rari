@@ -1,5 +1,12 @@
 catalogMode: prefer
 minimumReleaseAgeExclude:
+  - '@oxc-project/*'
+  - oxfmt
+  - '@oxfmt/*'
+  - oxlint
+  - '@oxlint/*'
+  - vite-plus
+  - '@voidzero-dev/*'
   - '@rari/use-cache-darwin-arm64@0.15.13'
   - '@rari/use-cache-darwin-x64@0.15.13'
   - '@rari/use-cache-linux-arm64@0.15.13'
