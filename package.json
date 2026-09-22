@@ -20,6 +20,7 @@
     "test:e2e:smoke": "playwright test smoke.spec.ts"
   },
   "devDependencies": {
+    "@e18e/eslint-plugin": "catalog:eslint",
     "@napi-rs/cli": "catalog:build",
     "@playwright/test": "catalog:testing",
     "@rari/lint": "workspace:*",
