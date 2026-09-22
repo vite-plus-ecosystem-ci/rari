@@ -702,7 +702,8 @@ export const lint: OxlintConfig = {
         'react/no-danger-with-children': 'error',
         'react/no-direct-mutation-state': 'error',
         'react/no-unstable-nested-components': 'error',
-        'react/react-compiler': 'error',
+        // Ecosystem-ci smoke test: oxlint 1.85 replaces this aggregate rule
+        // with individual React Compiler diagnostics.
         'react/rules-of-hooks': 'error',
         'react/void-dom-elements-no-children': 'error',
         'react/only-export-components': [
