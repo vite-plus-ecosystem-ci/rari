@@ -4,11 +4,13 @@ import { monorepoFmt, monorepoLint } from '../../.config/lint/monorepo'
 export default defineConfig({
   fmt: monorepoFmt,
   lint: monorepoLint,
-  pack: { deps: {
+  pack: {
+    deps: {
       // tsdown <0.23 compatibility: resolve external dependency subpaths.
       // Remove to preserve subpath imports as written (the new default).
       // https://tsdown.dev/options/dependencies#deps-resolvedepsubpath
-      resolveDepSubpath: true },
+      resolveDepSubpath: true,
+    },
     entry: ['src/index.ts'],
     minify: true,
   },
