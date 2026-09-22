@@ -17,7 +17,7 @@ jobs:
           run-install: false
       - name: vp install
         run: vp install --no-frozen-lockfile
+      - name: Build workspace packages
+        run: pnpm --filter './packages/**' -r run build
       - name: vp check
         run: vp check
-      - name: vp build
-        run: vp run build

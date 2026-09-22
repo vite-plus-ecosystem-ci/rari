@@ -273,6 +273,7 @@ declare global {
     function umask(mask?: number): number
     function execPath(): string
 
+    /* oxlint-disable eslint/no-redeclare -- Deno exposes both the FsFile type and value */
     interface FsFile {
       read: (p: Uint8Array) => Promise<number | null>
       write: (p: Uint8Array) => Promise<number>
@@ -280,6 +281,7 @@ declare global {
     }
 
     let FsFile: any
+    /* oxlint-enable eslint/no-redeclare */
 
     interface WriteFileOptions {
       append?: boolean

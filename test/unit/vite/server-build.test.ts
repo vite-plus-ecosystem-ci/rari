@@ -516,7 +516,6 @@ export async function action() { return {} }`)
 
       vi.mocked(fsSync.promises.stat).mockResolvedValue(mockStat(1000))
 
-      // @ts-expect-error spying on internal build method
       const buildSpy = vi.spyOn(builder, 'buildSingleComponent')
 
       await builder.rebuildComponent(filePath)
@@ -631,7 +630,6 @@ export async function action() { return {} }`)
 
       vi.mocked(fsSync.promises.stat).mockResolvedValue(mockStat(1000))
 
-      // @ts-expect-error spying on internal build method
       const buildSpy = vi.spyOn(builder, 'buildSingleComponent')
 
       await builder.rebuildComponent(filePath)

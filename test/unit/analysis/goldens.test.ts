@@ -36,10 +36,11 @@ interface DirectiveCase {
 
 describe('analysis goldens (shared with Rust)', () => {
   it('matches component ID fixtures', () => {
-    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- golden fixture JSON
+    /* oxlint-disable typescript/no-unsafe-type-assertion -- golden fixture JSON */
     const fixture = JSON.parse(
       fs.readFileSync(path.join(fixturesDir, 'component-ids.json'), 'utf8'),
     ) as { cases: ComponentIdCase[] }
+    /* oxlint-enable typescript/no-unsafe-type-assertion */
     const projectRoot = path.join(os.tmpdir(), 'rari-analysis-golden')
 
     for (const testCase of fixture.cases) {
@@ -50,10 +51,11 @@ describe('analysis goldens (shared with Rust)', () => {
   })
 
   it('matches directive fixtures', () => {
-    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- golden fixture JSON
+    /* oxlint-disable typescript/no-unsafe-type-assertion -- golden fixture JSON */
     const fixture = JSON.parse(
       fs.readFileSync(path.join(fixturesDir, 'directives.json'), 'utf8'),
     ) as { cases: DirectiveCase[] }
+    /* oxlint-enable typescript/no-unsafe-type-assertion */
 
     for (const testCase of fixture.cases) {
       const directives = getDirectives(testCase.source)
