@@ -2,6 +2,9 @@ catalogMode: prefer
 
 minimumReleaseAgeExcludePrune: true
 minimumReleaseAgeExclude:
+  # ecosystem-ci smoke test: preview builds carry no provenance and are brand new
+  - vite-plus
+  - '@voidzero-dev/*'
   - '@rari/use-cache-darwin-arm64@0.16.0'
   - '@rari/use-cache-darwin-x64@0.16.0'
   - '@rari/use-cache-linux-arm64@0.16.0'
@@ -19,6 +22,9 @@ shellEmulator: true
 
 trustPolicy: no-downgrade
 trustPolicyExclude:
+  # ecosystem-ci smoke test: preview builds carry no provenance and are brand new
+  - vite-plus
+  - '@voidzero-dev/*'
   - semver@6.3.1
 
 packages:
@@ -39,8 +45,10 @@ catalogs:
     '@napi-rs/cli': ^3.10.4
     oxc-transform-react: ^0.151.0
     rolldown: ^1.2.9
-    vite: ^8.3.0
-    vite-plus: ^0.3.3
+    vite: npm:@voidzero-dev/vite-plus-core@0.0.0-commit.dd71b05c0f66a3529d0da591363c1ee6be3ec17d
+    vite-plus: 0.0.0-commit.dd71b05c0f66a3529d0da591363c1ee6be3ec17d
+    vitest: 5.0.1
+    '@vitest/coverage-v8': 5.0.1
   cli:
     '@clack/prompts': ^1.8.1
   font:
@@ -97,7 +105,7 @@ catalogs:
     tailwindcss: ^4.3.3
   testing:
     '@playwright/test': ^1.63.0
-    '@vitest/coverage-v8': ^5.0.1
+    '@vitest/coverage-v8': 5.0.1
   typescript:
     '@types/node': ^26.6.2
     # https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/#running-side-by-side-with-typescript-6.0
@@ -106,3 +114,13 @@ catalogs:
 
 allowBuilds:
   core-js: true
+overrides:
+  vite@*: catalog:build
+  vitest@*: catalog:build
+peerDependencyRules:
+  allowAny:
+    - vite
+    - vitest
+  allowedVersions:
+    vite: '*'
+    vitest: '*'
