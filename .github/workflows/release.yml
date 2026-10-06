@@ -56,7 +56,7 @@ jobs:
             name: rari-darwin-arm64
             platform: darwin-arm64
           - target: x86_64-pc-windows-msvc
-            runner: namespace-profile-rari-windows-amd64
+            runner: windows-latest
             name: rari-win32-x64.exe
             vcpkg_triplet: x64-windows
             platform: win32-x64
@@ -447,10 +447,10 @@ jobs:
             runner: namespace-profile-rari-macos-arm64
             platform: darwin-arm64
           - target: x86_64-pc-windows-msvc
-            runner: namespace-profile-rari-windows-amd64
+            runner: windows-latest
             platform: win32-x64
           - target: aarch64-pc-windows-msvc
-            runner: namespace-profile-rari-windows-amd64
+            runner: windows-latest
             platform: win32-arm64
 
     steps:
