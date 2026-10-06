@@ -2,7 +2,7 @@ import path from 'node:path'
 import stylex from '@stylexjs/unplugin'
 import tailwindcss from '@tailwindcss/vite'
 import { rari } from 'rari/vite'
-import { defineConfig } from 'vite'
+import { defineConfig } from 'vite-plus'
 
 export default defineConfig({
   plugins: [

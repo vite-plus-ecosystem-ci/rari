@@ -21,16 +21,6 @@ minimumReleaseAgeExclude:
   - rari-win32-arm64@0.17.1
   - rari-win32-x64@0.17.1
   - rari@0.17.2
-  - '@voidzero-dev/vite-plus-core@1.0.0'
-  - '@voidzero-dev/vite-plus-darwin-arm64@1.0.0'
-  - '@voidzero-dev/vite-plus-darwin-x64@1.0.0'
-  - '@voidzero-dev/vite-plus-linux-arm64-gnu@1.0.0'
-  - '@voidzero-dev/vite-plus-linux-arm64-musl@1.0.0'
-  - '@voidzero-dev/vite-plus-linux-x64-gnu@1.0.0'
-  - '@voidzero-dev/vite-plus-linux-x64-musl@1.0.0'
-  - '@voidzero-dev/vite-plus-win32-arm64-msvc@1.0.0'
-  - '@voidzero-dev/vite-plus-win32-x64-msvc@1.0.0'
-  - vite-plus@1.0.0
 
 shellEmulator: true
 
@@ -60,8 +50,10 @@ catalogs:
     '@napi-rs/cli': ^3.10.5
     oxc-transform-react: ^0.151.0
     rolldown: ^1.2.11
-    vite: ^8.3.1
-    vite-plus: ^1.0.0
+    vite: npm:@voidzero-dev/vite-plus-core@0.0.0-commit.7cb75b46f7a73413ee0803eaac3f6a6b6763f158
+    vite-plus: 0.0.0-commit.7cb75b46f7a73413ee0803eaac3f6a6b6763f158
+    vitest: 5.0.3
+    '@vitest/coverage-v8': 5.0.3
   cli:
     '@clack/prompts': ^1.8.1
   font:
@@ -118,7 +110,7 @@ catalogs:
     tailwindcss: ^4.3.3
   testing:
     '@playwright/test': ^1.63.0
-    '@vitest/coverage-v8': ^5.0.2
+    '@vitest/coverage-v8': 5.0.3
   typescript:
     '@types/node': ^26.6.3
     # https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/#running-side-by-side-with-typescript-6.0
@@ -127,3 +119,13 @@ catalogs:
 
 allowBuilds:
   core-js: true
+overrides:
+  vite@*: catalog:build
+  vitest@*: catalog:build
+peerDependencyRules:
+  allowAny:
+    - vite
+    - vitest
+  allowedVersions:
+    vite: '*'
+    vitest: '*'
