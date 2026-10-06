@@ -2,6 +2,11 @@ catalogMode: prefer
 
 minimumReleaseAgeExcludePrune: true
 minimumReleaseAgeExclude:
+  # ecosystem-ci smoke test: preview builds carry no provenance and are brand new
+  - vite-plus
+  - '@voidzero-dev/*'
+  # ecosystem-ci smoke test: Vite+ core pins freshly published oxc packages
+  - '@oxc-project/*'
   - '@rari/use-cache-darwin-arm64@0.17.1'
   - '@rari/use-cache-darwin-x64@0.17.1'
   - '@rari/use-cache-linux-arm64@0.17.1'
@@ -31,6 +36,9 @@ shellEmulator: true
 
 trustPolicy: no-downgrade
 trustPolicyExclude:
+  # ecosystem-ci smoke test: preview builds carry no provenance and are brand new
+  - vite-plus
+  - '@voidzero-dev/*'
   - semver@6.3.1
   - why-is-node-running@3.2.2
 
