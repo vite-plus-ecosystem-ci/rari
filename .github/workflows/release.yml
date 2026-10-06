@@ -73,7 +73,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: namespacelabs/nscloud-checkout-action@66f2dc6f6c42a8ac6c4e53473c4840006822831e # v9.0.1
+      - uses: actions/checkout@v6
         if: runner.os != 'Windows' && !matrix.github_hosted
 
       - uses: ./.github/actions/setup-platform-cache
@@ -459,7 +459,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: namespacelabs/nscloud-checkout-action@66f2dc6f6c42a8ac6c4e53473c4840006822831e # v9.0.1
+      - uses: actions/checkout@v6
         if: runner.os != 'Windows'
 
       - uses: ./.github/actions/setup-platform-cache

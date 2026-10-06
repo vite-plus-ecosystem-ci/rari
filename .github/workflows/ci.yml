@@ -40,7 +40,7 @@ jobs:
         with:
           fetch-depth: '0'
 
-      - uses: namespacelabs/nscloud-checkout-action@66f2dc6f6c42a8ac6c4e53473c4840006822831e # v9.0.1
+      - uses: actions/checkout@v6
         if: runner.os != 'Windows'
         with:
           fetch-depth: '0'
@@ -97,7 +97,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: runner.os == 'Windows'
 
-      - uses: namespacelabs/nscloud-checkout-action@66f2dc6f6c42a8ac6c4e53473c4840006822831e # v9.0.1
+      - uses: actions/checkout@v6
         if: runner.os != 'Windows'
 
       - uses: ./.github/actions/setup-namespace-cache
@@ -152,7 +152,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: runner.os == 'Windows'
 
-      - uses: namespacelabs/nscloud-checkout-action@66f2dc6f6c42a8ac6c4e53473c4840006822831e # v9.0.1
+      - uses: actions/checkout@v6
         if: runner.os != 'Windows'
 
       - uses: ./.github/actions/setup-namespace-cache
@@ -217,7 +217,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: namespacelabs/nscloud-checkout-action@66f2dc6f6c42a8ac6c4e53473c4840006822831e # v9.0.1
+      - uses: actions/checkout@v6
         if: runner.os != 'Windows'
 
       - uses: ./.github/actions/setup-platform-cache
@@ -307,7 +307,7 @@ jobs:
       actions: write
       contents: read
     steps:
-      - uses: namespacelabs/nscloud-checkout-action@66f2dc6f6c42a8ac6c4e53473c4840006822831e # v9.0.1
+      - uses: actions/checkout@v6
 
       - uses: ./.github/actions/setup-platform-cache
         with:
@@ -413,7 +413,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: runner.os == 'Windows'
 
-      - uses: namespacelabs/nscloud-checkout-action@66f2dc6f6c42a8ac6c4e53473c4840006822831e # v9.0.1
+      - uses: actions/checkout@v6
         if: runner.os != 'Windows'
 
       - uses: ./.github/actions/setup-namespace-cache
@@ -473,7 +473,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: runner.os == 'Windows'
 
-      - uses: namespacelabs/nscloud-checkout-action@66f2dc6f6c42a8ac6c4e53473c4840006822831e # v9.0.1
+      - uses: actions/checkout@v6
         if: runner.os != 'Windows'
 
       - uses: ./.github/actions/setup-namespace-cache
@@ -537,7 +537,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: namespacelabs/nscloud-checkout-action@66f2dc6f6c42a8ac6c4e53473c4840006822831e # v9.0.1
+      - uses: actions/checkout@v6
         if: runner.os != 'Windows'
 
       - uses: ./.github/actions/setup-platform-cache
