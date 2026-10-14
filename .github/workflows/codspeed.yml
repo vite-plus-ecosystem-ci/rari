@@ -43,7 +43,9 @@ jobs:
       - name: Build the benchmarks
         run: cargo codspeed build -p rari_use_cache
 
+      # Ecosystem-ci smoke test: CodSpeed returns 401 without the upstream token.
       - name: Run the benchmarks
+        if: ${{ github.repository_owner != 'vite-plus-ecosystem-ci' }}
         uses: CodSpeedHQ/action@c4fd08a3a159bd0cc208da1e0edf32b8c47d75e5 # v5.4.0
         with:
           mode: simulation
