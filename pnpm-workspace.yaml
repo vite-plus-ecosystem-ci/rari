@@ -46,6 +46,10 @@ packages:
   - tools/bundle-react-esm
   - web
 
+overrides:
+  vite@*: catalog:build
+  vitest@*: catalog:build
+
 catalogs:
   analytics:
     posthog-js: ^1.436.1
@@ -56,7 +60,6 @@ catalogs:
     vite: npm:@voidzero-dev/vite-plus-core@0.0.0-commit.824e84de80cbc1af30829ed024a4158d416dbad3
     vite-plus: 0.0.0-commit.824e84de80cbc1af30829ed024a4158d416dbad3
     vitest: 5.0.4
-    '@vitest/coverage-v8': 5.0.4
   cli:
     '@clack/prompts': ^1.8.1
   font:
@@ -122,9 +125,7 @@ catalogs:
 
 allowBuilds:
   core-js: true
-overrides:
-  vite@*: catalog:build
-  vitest@*: catalog:build
+
 peerDependencyRules:
   allowAny:
     - vite
