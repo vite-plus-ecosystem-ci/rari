@@ -3,6 +3,13 @@ catalogMode: prefer
 minimumReleaseAgeExcludePrune: true
 minimumReleaseAgeExclude:
   # ecosystem-ci smoke test: preview builds and freshly pinned toolchain packages
+  - oxlint
+  - '@oxlint/*'
+  - oxfmt
+  - '@oxfmt/*'
+  - oxlint-tsgolint
+  - '@oxlint-tsgolint/*'
+  # ecosystem-ci smoke test: preview builds and freshly pinned toolchain packages
   - vite-plus
   - '@voidzero-dev/*'
   - '@oxc-project/*'
