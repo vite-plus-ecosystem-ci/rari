@@ -14,7 +14,6 @@ minimumReleaseAgeExclude:
   - '@voidzero-dev/*'
   - '@oxc-project/*'
   - tinybench
-  - yuku-core
   - yuku-parser
   - '@yuku-core/*'
   - '@yuku-toolchain/*'
@@ -32,16 +31,6 @@ minimumReleaseAgeExclude:
   - rari-win32-arm64@0.17.4
   - rari-win32-x64@0.17.4
   - rari@0.17.4
-  - '@voidzero-dev/vite-plus-core@1.0.0'
-  - '@voidzero-dev/vite-plus-darwin-arm64@1.0.0'
-  - '@voidzero-dev/vite-plus-darwin-x64@1.0.0'
-  - '@voidzero-dev/vite-plus-linux-arm64-gnu@1.0.0'
-  - '@voidzero-dev/vite-plus-linux-arm64-musl@1.0.0'
-  - '@voidzero-dev/vite-plus-linux-x64-gnu@1.0.0'
-  - '@voidzero-dev/vite-plus-linux-x64-musl@1.0.0'
-  - '@voidzero-dev/vite-plus-win32-arm64-msvc@1.0.0'
-  - '@voidzero-dev/vite-plus-win32-x64-msvc@1.0.0'
-  - vite-plus@1.0.0
 
 shellEmulator: true
 
@@ -71,8 +60,10 @@ catalogs:
     '@napi-rs/cli': ^3.10.7
     oxc-transform-react: ^0.153.0
     rolldown: ^1.2.12
-    vite: ^8.3.2
-    vite-plus: ^1.0.0
+    vite: npm:@voidzero-dev/vite-plus-core@0.0.0-commit.3b99001a24f162be6a4478c3b97f3d0eb81c96c8
+    vite-plus: 0.0.0-commit.3b99001a24f162be6a4478c3b97f3d0eb81c96c8
+    vitest: 5.0.4
+    '@vitest/coverage-v8': 5.0.4
   cli:
     '@clack/prompts': ^1.8.1
   font:
@@ -129,7 +120,7 @@ catalogs:
     tailwindcss: ^4.3.3
   testing:
     '@playwright/test': ^1.63.0
-    '@vitest/coverage-v8': ^5.0.3
+    '@vitest/coverage-v8': 5.0.4
   typescript:
     '@types/node': ^26.6.4
     # https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/#running-side-by-side-with-typescript-6.0
@@ -138,3 +129,13 @@ catalogs:
 
 allowBuilds:
   core-js: true
+overrides:
+  vite@*: catalog:build
+  vitest@*: catalog:build
+peerDependencyRules:
+  allowAny:
+    - vite
+    - vitest
+  allowedVersions:
+    vite: '*'
+    vitest: '*'
