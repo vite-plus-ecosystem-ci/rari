@@ -126,7 +126,7 @@ jobs:
         run: just ci-generate-snapshot
 
       - name: Upload snapshot
-        uses: namespace-actions/upload-artifact@f6ccaacc655aec41b93af180d1d7eef21af862d2 # v1.0.3
+        uses: actions/upload-artifact@v4
         with:
           name: v8-snapshot
           path: |
@@ -177,7 +177,7 @@ jobs:
 
       - name: Download snapshot
         if: needs.build-snapshot.result == 'success'
-        uses: namespace-actions/download-artifact@7cbad919e4b0e09f17e9d6311a444ff002992b5b # v2.0.1
+        uses: actions/download-artifact@v4
         with:
           name: v8-snapshot
           path: crates/rari/snapshots
@@ -244,7 +244,7 @@ jobs:
 
       - name: Download snapshot
         if: needs.build-snapshot.result == 'success' && runner.os == 'Linux'
-        uses: namespace-actions/download-artifact@7cbad919e4b0e09f17e9d6311a444ff002992b5b # v2.0.1
+        uses: actions/download-artifact@v4
         with:
           name: v8-snapshot
           path: crates/rari/snapshots
@@ -271,7 +271,7 @@ jobs:
 
       - name: Upload binary (Linux)
         if: runner.os == 'Linux'
-        uses: namespace-actions/upload-artifact@f6ccaacc655aec41b93af180d1d7eef21af862d2 # v1.0.3
+        uses: actions/upload-artifact@v4
         with:
           name: rari-binary-linux
           path: target/debug/rari
@@ -280,7 +280,7 @@ jobs:
 
       - name: Upload binary (Windows)
         if: runner.os == 'Windows'
-        uses: namespace-actions/upload-artifact@f6ccaacc655aec41b93af180d1d7eef21af862d2 # v1.0.3
+        uses: actions/upload-artifact@v4
         with:
           name: rari-binary-windows
           path: target/debug/rari.exe
@@ -331,7 +331,7 @@ jobs:
         run: just ci-prepare-use-cache-addon
 
       - name: Upload addon
-        uses: namespace-actions/upload-artifact@f6ccaacc655aec41b93af180d1d7eef21af862d2 # v1.0.3
+        uses: actions/upload-artifact@v4
         with:
           name: use-cache-linux-x64
           path: |
@@ -383,7 +383,7 @@ jobs:
         run: just ci-prepare-use-cache-addon
 
       - name: Upload addon
-        uses: namespace-actions/upload-artifact@f6ccaacc655aec41b93af180d1d7eef21af862d2 # v1.0.3
+        uses: actions/upload-artifact@v4
         with:
           name: use-cache-win32-x64
           path: |
@@ -437,7 +437,7 @@ jobs:
         run: just ci-verify-dist
 
       - name: Upload dist artifact
-        uses: namespace-actions/upload-artifact@f6ccaacc655aec41b93af180d1d7eef21af862d2 # v1.0.3
+        uses: actions/upload-artifact@v4
         with:
           if-no-files-found: error
           retention-days: 3
@@ -546,7 +546,7 @@ jobs:
           node-version: ${{ matrix.node }}
 
       - name: Restore dist cache
-        uses: namespace-actions/download-artifact@7cbad919e4b0e09f17e9d6311a444ff002992b5b # v2.0.1
+        uses: actions/download-artifact@v4
         with:
           name: dist
           path: packages
@@ -570,14 +570,14 @@ jobs:
 
       - name: Download rari binary (Linux)
         if: runner.os == 'Linux'
-        uses: namespace-actions/download-artifact@7cbad919e4b0e09f17e9d6311a444ff002992b5b # v2.0.1
+        uses: actions/download-artifact@v4
         with:
           name: rari-binary-linux
           path: packages/rari-linux-x64/bin
 
       - name: Download rari binary (Windows)
         if: runner.os == 'Windows'
-        uses: namespace-actions/download-artifact@7cbad919e4b0e09f17e9d6311a444ff002992b5b # v2.0.1
+        uses: actions/download-artifact@v4
         with:
           name: rari-binary-windows
           path: packages/rari-win32-x64/bin
@@ -604,7 +604,7 @@ jobs:
 
       - name: Upload Playwright report
         if: always()
-        uses: namespace-actions/upload-artifact@f6ccaacc655aec41b93af180d1d7eef21af862d2 # v1.0.3
+        uses: actions/upload-artifact@v4
         with:
           name: playwright-report-${{ matrix.os }}
           path: |
