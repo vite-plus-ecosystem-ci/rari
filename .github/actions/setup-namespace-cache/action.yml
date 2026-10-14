@@ -22,7 +22,10 @@ runs:
         node-version: ${{ inputs.node-version }}
         package-manager-cache: false
 
+    # Ecosystem-ci smoke test: Namespace cache volumes exist only on Namespace
+    # runners; the fork runs on GitHub-hosted runners, so skip the cache there.
     - name: Configure Namespace cache
+      if: ${{ github.repository_owner != 'vite-plus-ecosystem-ci' }}
       uses: namespacelabs/nscloud-cache-action@1124a6f3ce44e5cf84cc22111530961f4d2a15f9 # v1.7.0
       with:
         cache: ${{ inputs.cache }}
