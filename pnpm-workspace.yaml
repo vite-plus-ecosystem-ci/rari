@@ -2,6 +2,22 @@ catalogMode: prefer
 
 minimumReleaseAgeExcludePrune: true
 minimumReleaseAgeExclude:
+  # ecosystem-ci smoke test: preview builds and freshly pinned toolchain packages
+  - vite-plus
+  - '@voidzero-dev/*'
+  - '@oxc-project/*'
+  - oxlint
+  - '@oxlint/*'
+  - oxfmt
+  - '@oxfmt/*'
+  - oxlint-tsgolint
+  - '@oxlint-tsgolint/*'
+  - vitest
+  - '@vitest/*'
+  - tinybench
+  - yuku-parser
+  - '@yuku-core/*'
+  - '@yuku-toolchain/*'
   - '@rari/use-cache-darwin-arm64@0.17.6'
   - '@rari/use-cache-darwin-x64@0.17.6'
   - '@rari/use-cache-linux-arm64@0.17.6'
@@ -16,21 +32,14 @@ minimumReleaseAgeExclude:
   - rari-win32-arm64@0.17.5 || 0.17.6
   - rari-win32-x64@0.17.5 || 0.17.6
   - rari@0.17.5
-  - '@voidzero-dev/vite-plus-core@1.0.0'
-  - '@voidzero-dev/vite-plus-darwin-arm64@1.0.0'
-  - '@voidzero-dev/vite-plus-darwin-x64@1.0.0'
-  - '@voidzero-dev/vite-plus-linux-arm64-gnu@1.0.0'
-  - '@voidzero-dev/vite-plus-linux-arm64-musl@1.0.0'
-  - '@voidzero-dev/vite-plus-linux-x64-gnu@1.0.0'
-  - '@voidzero-dev/vite-plus-linux-x64-musl@1.0.0'
-  - '@voidzero-dev/vite-plus-win32-arm64-msvc@1.0.0'
-  - '@voidzero-dev/vite-plus-win32-x64-msvc@1.0.0'
-  - vite-plus@1.0.0
 
 shellEmulator: true
 
 trustPolicy: no-downgrade
 trustPolicyExclude:
+  # ecosystem-ci smoke test: preview builds and freshly pinned toolchain packages
+  - vite-plus
+  - '@voidzero-dev/*'
   - semver@6.3.1
   - why-is-node-running@3.2.2
 
@@ -52,8 +61,10 @@ catalogs:
     '@napi-rs/cli': ^3.10.7
     oxc-transform-react: ^0.153.0
     rolldown: ^1.2.12
-    vite: ^8.3.2
-    vite-plus: ^1.0.0
+    vite: npm:@voidzero-dev/vite-plus-core@0.0.0-commit.6a30b43184ad1c159091d51d728ee8c249392aa1
+    vite-plus: 0.0.0-commit.6a30b43184ad1c159091d51d728ee8c249392aa1
+    vitest: 5.0.5
+    '@vitest/coverage-v8': 5.0.5
   cli:
     '@clack/prompts': ^1.8.1
   font:
@@ -110,7 +121,7 @@ catalogs:
     tailwindcss: ^4.3.3
   testing:
     '@playwright/test': ^1.63.0
-    '@vitest/coverage-v8': ^5.0.3
+    '@vitest/coverage-v8': 5.0.5
   typescript:
     '@types/node': ^26.6.4
     # https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/#running-side-by-side-with-typescript-6.0
@@ -119,3 +130,13 @@ catalogs:
 
 allowBuilds:
   core-js: true
+overrides:
+  vite@*: catalog:build
+  vitest@*: catalog:build
+peerDependencyRules:
+  allowAny:
+    - vite
+    - vitest
+  allowedVersions:
+    vite: '*'
+    vitest: '*'
