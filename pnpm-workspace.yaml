@@ -2,6 +2,23 @@ catalogMode: prefer
 
 minimumReleaseAgeExcludePrune: true
 minimumReleaseAgeExclude:
+  # ecosystem-ci smoke test: preview builds and freshly pinned toolchain packages
+  - vite-plus
+  - '@voidzero-dev/*'
+  - '@oxc-project/*'
+  - oxlint
+  - '@oxlint/*'
+  - oxfmt
+  - '@oxfmt/*'
+  - oxlint-tsgolint
+  - '@oxlint-tsgolint/*'
+  - vitest
+  - '@vitest/*'
+  - tinybench
+  - yuku-core
+  - yuku-parser
+  - '@yuku-core/*'
+  - '@yuku-toolchain/*'
   - '@rari/use-cache-darwin-arm64@0.17.6'
   - '@rari/use-cache-darwin-x64@0.17.6'
   - '@rari/use-cache-linux-arm64@0.17.6'
@@ -31,6 +48,9 @@ shellEmulator: true
 
 trustPolicy: no-downgrade
 trustPolicyExclude:
+  # ecosystem-ci smoke test: preview builds and freshly pinned toolchain packages
+  - vite-plus
+  - '@voidzero-dev/*'
   - semver@6.3.1
   - why-is-node-running@3.2.2
 
